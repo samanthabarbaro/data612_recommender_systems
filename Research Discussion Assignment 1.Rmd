@@ -1,0 +1,36 @@
+---
+title: "Research Discussion Assignment 1"
+author: "Sam Barbaro"
+date: "2026-06-04"
+output: html_document
+---
+
+## Letterboxd
+
+Letterboxd uses the tagline "social film discovery," implying that users can get recommendations based on what users they follow or similar users have liked. Based on what I've seen, I think it's a collaborative filtering system that's both both user-based (recommends items from users with similar tastes) and content-based (recommends items that similar groups of users interact with).
+
+This comes with the caveat that I just signed up for a Letterboxd account; I don't have as much experience with it as other platforms. The recommendations may get way better if you rate hundreds of movies.
+
+Letterboxd responded to a request for recommendations [here](https://letterboxd.zendesk.com/hc/en-us/articles/15178828078223-Can-Letterboxd-generate-recommendations-for-me):
+
+> *While we view the whole of Letterboxd as one big, organic recommendation engine, we don’t have a section specifically labeled as such. You can, however, use our sorting and filtering options to find films that may be of interest. For example, [this page] shows a selection of films you haven’t seen, based on your watched and liked films (you’ll need to use the “heart” icon on a few films to get meaningful results, as this method doesn’t consider your ratings). Many films also have a “Similar Films” list; clicking through to see all similar films for a given title will show you the themes and “nanogenres” for that title, which is another great way to discover new films to watch based on your particular areas of interest.*
+
+They see the whole platform as a place for recommendations. First, it shows recent movies that people you follow liked. That's pretty straightforward. You can also filter for recommendations or look at a movie's page to find similar movies.
+
+I used the sorting and filtering options to find new movies. Overall, it does tend to show popular movies. You can filter (by genre, decade, popularity, etc.). Then, you can click "related to films you liked" or "based on films you liked" (there are other options, like popularity or rating, but these are the only options that seem to employ a recommender algorithm). It's difficult to parse the difference between these two options–those two phrases mean essentially the same thing–but they show slightly different sets of movies. The first showed more movies that were similar to what I'd liked, versus movies that more generally fell into the genre.
+
+If you click on an individual movie, the site shows similar films. This seems to be based on what users who liked this movie also like, but narrowed down by genre. For example, I clicked *Parasite*, and similar movies were Korean thrillers and other thrillers. Other recommendations, however, seemed random: *Barbie's* similar movies included *Free Guy* and *The Minecraft Movie* (I guess those are both video-game related, and Barbie is, in theory, toy-related).
+
+### Is this a good experience?
+
+The main problem is that the system tends to recommend popular movies: If I've seen the *Mario Galaxy* movie, I know about *Sonic*. This doesn't feel like a good platform for discovering things I will like but don't know about. This may be partly due to that there aren't many movies, and also because the platform does seem more intended as social media. I also imagine the experience gets better if you've rated a lot of movies–the recommendations may become more niche or specific to your interests. However, right now, popular movies you don't intend to see or simply haven't logged may tend to crowd the recommendations.
+
+Some of the "related movies" are truly bizarre, like th*e Barbie* example. Maybe because with great movies, there just aren't similar movies.
+
+## Attacks on Recommender Systems
+
+I worked at a press that published a controversial author, and her books were reviewed negatively before they published. I've also encountered obviously fake reviews for bad self-published cookbooks on Amazon (pre-AI, but for the record AI is a lot worse at writing recipes than it is at writing code). Having a certain number of ratings or an average score seems to make it more likely that a book is positioned on page 1 for relevant search terms.
+
+On the opposite end of the spectrum, this article made me think of the Mariah Carey #justiceforGlitter campaign in 2018, where fans purchased Mariah Carey's Glitter from September 2001 to push it to the top of the charts. It went to the top of the iTunes charts. #justiceforglitter is interesting because part of the campaign involved buying something, not just rating it or listening.
+
+If an abnormal number of ratings were coming from a specific region, one option is to keep users (not critics) embargoed from posting reviews before a piece of media or product is released (this is harder with some types of media, like books, where galleys are sent to readers to generate buzz). Making reviewers leave a review that meets a minimum length of a certain number of words or characters can stop people from dropping quick one- or five- star reviews. Systems can also flag certain words in reviews. Caveat: Any of these can cause a platform to run into ethical and censorship issues.
