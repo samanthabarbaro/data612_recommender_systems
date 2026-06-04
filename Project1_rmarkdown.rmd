@@ -1,0 +1,235 @@
+---
+title: "Project 1 Data 612"
+format: html
+editor: visual
+---
+
+## Project 1
+
+This system recommends rom-com novels to readers.
+
+### Loading the data
+
+```{r}
+library(tidyverse)
+
+
+romcom_books <- read.csv("https://raw.githubusercontent.com/samanthabarbaro/data612_recommender_systems/refs/heads/main/proj_1_dataset.csv", na.strings = c("", "NA", "null", "NULL"),  header = TRUE)
+```
+
+## Splitting the data
+
+Split the data into an 80/20 training and test set: I've pivoted longer so it's easier to split up different ratings from the same users. With this format, using a random sample of the data set, some users are represented in the training data but not the test data.
+
+```{r}
+pivoted_books <- romcom_books |>
+  pivot_longer(
+  cols = Carry.On:Attachments,
+        names_to = "book",
+        values_to = "rating"
+    )
+
+pivoted_books
+```
+
+### Create training and test data frames
+
+```{r}
+set.seed(1122)
+
+#remove NAs and rename the user column
+
+pivoted_books_2 <- pivoted_books |>
+  filter(!is.na(rating)) |>
+  rename(user = X)
+  
+
+#create a training and test set
+
+train_index <- sample(nrow(pivoted_books_2),
+                      0.8 * nrow(pivoted_books_2))
+
+train_books <- pivoted_books_2[train_index, ]
+
+test_books <- pivoted_books_2[-train_index, ]
+
+
+```
+
+### Calculating the raw average and RMSE for training and test data
+
+```{r}
+#mean overall rating (raw average)
+
+raw_average <- train_books |> 
+  mutate(mean_rating = round(mean(rating),2))
+
+error <- raw_average |>
+  #calculate the difference (error)
+  mutate(difference = (rating - mean_rating)) |>
+  #square the errors
+  mutate (square = (difference * difference))
+
+error
+
+#number of rows in the training set = 62
+count(train_books)
+
+#using 62 is not dynamic (does not account for adjusted sizes of training sets)
+#which is fine for this one instance, but could be substituted with count(train_books)
+
+#calculate rmse
+rmse_training <- error |> 
+  #sum the squared errors
+  summarise(total_sq = sum(square)) |>
+  #take the mean and then the sq root
+  mutate(rmse = (sqrt(total_sq/62))) 
+
+#the rmse for the training set is 1.16
+rmse_training
+
+#number of rows in the test set is 16
+count(test_books)
+
+#calculate RMSE for test set
+rmse_test <- test_books |> 
+  mutate(mean_rating = 3.23) |>
+  mutate(difference = (rating - mean_rating)) |>
+  mutate(square = (difference*difference))
+
+rmse_test <- rmse_test |>
+    summarise(total_sq = sum(square)) |>
+  #take the mean and then the sq root
+  mutate(rmse = (sqrt(total_sq/16))) 
+
+#RMSE for the test set is 1.295
+rmse_test
+
+```
+
+### Calculate the bias for each user and each item
+
+The bias for each user is the mean of their ratings - the mean across all books (how much higher or lower they tend to rate something).
+
+The bias for each item is how much higher or lower the average rating is than the over all average rating.
+
+User bias = user average - raw average
+
+Item/book bias = movie average - raw average
+
+```{r}
+#mean for each book, user, and overall
+item_user_mean <- train_books |> 
+  #mean for each book
+  group_by(book) |> 
+  mutate(book_mean = round(mean(rating),2)) |> 
+  ungroup() |>
+  #mean for each user
+  group_by(user) |> 
+  mutate(user_mean = round(mean(rating),2)) |> 
+  ungroup() |>
+  mutate(overall_mean = 3.23)
+
+#calculate the biases
+
+# user bias = user mean - overall mean (across all books)
+
+#item bias = item mean - overall mean (across all books)
+
+#creating a key that I will join to the original pivoted data set, which includes all
+#item/user combos 
+user_biases <- item_user_mean |> 
+  mutate(user_bias = (user_mean - overall_mean)) |>
+  distinct(user, user_bias)
+
+item_biases <- item_user_mean |> 
+  mutate(item_bias = (book_mean - overall_mean)) |>
+  distinct(book, item_bias)
+
+```
+
+### Calculating baseline predictors
+
+Finding the baseline predictors for every user-item combination.
+
+Baseline predictor = raw average + user bias + movie bias
+
+```{r}
+book_key <- pivoted_books |> 
+  rename(user = X) |>
+  mutate(overall_mean = 3.23) |>
+  left_join(user_biases, by = "user") |>
+  left_join(item_biases, by = "book")
+
+predictions <- book_key |>
+  mutate(baseline_predictor = (overall_mean + user_bias + item_bias)) |>
+  #if it's larger than 5, then 5
+  mutate(baseline_predictor = if_else(baseline_predictor > 5, 5, baseline_predictor))
+
+predictions
+```
+
+Select from the pivoted longer data set (before removing NAs) just the user and the movie column, then join with the movie average rating:
+
+```{r}
+train_predictions <- train_books |>
+  left_join(predictions, by = c("user", "book"))
+
+train_predictions
+
+test_predictions <- test_books |> 
+   left_join(predictions, by = c("user", "book"))
+
+test_predictions
+```
+
+Calculating RMSE for the baseline predictors for both the training and test data:
+
+```{r}
+#calculate the difference and square the difference
+
+train_predictions <- train_predictions |>
+  mutate(difference = rating.x - baseline_predictor) |>
+  mutate(square = (difference*difference))
+
+rmse_training_baseline <- train_predictions |> 
+  #sum the squared errors
+  summarise(total_sq = sum(square)) |>
+  #take the mean and then the sq root
+  mutate(rmse = (sqrt(total_sq/62))) 
+
+#the rmse for the training set is .55
+rmse_training_baseline
+```
+
+RMSE for test set:
+
+```{r}
+test_predictions <- test_predictions |>
+  mutate(difference = rating.x - baseline_predictor) |>
+  mutate(square = (difference*difference))
+
+rmse_test_baseline <- test_predictions |> 
+  #sum the squared errors
+  summarise(total_sq = sum(square)) |>
+  #take the mean and then the sq root
+  mutate(rmse = (sqrt(total_sq/16))) 
+
+#the rmse for the test set is much higher at .935
+rmse_test_baseline
+```
+
+### Summary
+
+The RMSE was highest when using the raw average, which doesn't account for differences across users or media at 1.295 on the test data and 1.16 on the training data.
+
+Results were slightly better when accounting for user and book bias. When I calculated the predicted rating for the test set, the RMSE was only .55. However, it was much higher for the test set at .935 (almost a full point). When checking the calculations, one large difference (a low rating of a generally highly rated book by user 15, a high rater) may have introduced a lot of error.
+
+The percent improvement on test data, when switching from a raw average method to a baseline predictor method, was about 28% on the test data and about 52% on the training data.
+
+```{r}
+test_improvment <- (1 - .935 /1.295)
+training_improvement <- (1 - .555/1.16)
+test_improvment
+training_improvement
+```
