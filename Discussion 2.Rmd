@@ -1,0 +1,22 @@
+---
+title: "Discussion 2"
+author: "Sam Barbaro"
+date: "2026-06-08"
+output: html_document
+---
+
+# Music Recommendations at Scale with Spark
+
+There are different ways of recommending music to users, including finding related artists and personalized recommendations. The presenter goes through ways to find recommendations that other streamers, like Pandora, use. There's manual curation, tagging attributes (like the music geonome project), etc. These methods are all more or less labor-intensive.
+
+Spotify has historically used collaborative filtering: looking at what users are listening to, finding relationships, and recommending music based on that. One way of doing this is explicit Matrix factorization, which accounts for biases and latent factor vectors, which can loosely correspond to preferences, like how many times a user has listened to a specific artist, their preference for soft rock, etc.
+
+![](images/clipboard-4279676473.png)
+
+Spotify uses implicit ratings (1s and 0s, streamed vs. never streamed), since users can't "like" or rate songs. So, they use ALS, which introduces a confidence weighting based on factors like the number of times a user has streamed a particular artist.
+
+![](images/clipboard-3746907831.png)
+
+Spotify started by using Hadoop for matrix factorization, breaking users and items up into clusters/blocks, but it was not scaleable. So, they moved to Apache Spark. The first attempt was computationally expensive and too a long time, broadcasting the same item vectors to every partition. The second attempt involved cached ratings; they didn't have to send all the item vectors to every partition. The shuffling was wasteful. The third attempt kept all ratings for a given user in the same block, which cut down on the shuffle phase. This required every single item vector, which requires more local space memory than other methods. The third attempt was the fastest.
+
+As of this presentation in 2014, Spotify hadn't been able to run these jobs on their full data set, only about 20%--any larger, and they started running into failed executor errors.
