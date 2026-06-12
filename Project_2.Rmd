@@ -1,0 +1,748 @@
+---
+title: "Project 2"
+author: "Sam Barbaro"
+date: "2026-06-07"
+output: html_document
+---
+
+# Project 2
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(recommenderlab)
+
+#load MovieLensMeta
+data("MovieLense")
+
+```
+
+```{r}
+#this df contains item information (boolean yes or no whether something has
+#an attribute)
+glimpse(MovieLenseMeta)
+
+#user information (age, occupatoin, etc.)
+glimpse(MovieLenseUser)
+
+#the main data set
+
+MovieLense
+```
+
+## Exploratory analysis
+
+```{r}
+#convert the matrix into a data frame (long) for exploratory analysis 
+
+ratings_df <- as(MovieLense, "data.frame")
+
+ratings_df_wide <- as.data.frame(as(MovieLense, "matrix"))
+
+```
+
+### Most-rated and top-rated movies
+
+What movies have the most ratings? What movies are the best-rated? How many movies are represented overall?
+
+```{r}
+top_ratings <- ratings_df |> 
+  group_by(item) |>
+  summarise(avg_rating = mean(rating, na.rm = TRUE)) |>
+  arrange(desc(avg_rating))
+
+#some of these movies have probably only been rated once
+top_ratings
+
+most_ratings <- ratings_df |>
+  group_by(item) |>
+  summarise(count_rating = n(),
+            mean_rating  = mean(rating, na.rm = TRUE)) |>
+  arrange(desc(count_rating))
+
+#the original star wars is the most-rated movie
+most_ratings
+
+highest_rated <- most_ratings |>
+  filter(count_rating > 50) |>
+  arrange(desc(mean_rating))
+
+#top-rated movies with more than 50 reviews
+head(highest_rated)
+
+#1664 unique movies are represented
+count(most_ratings)
+
+#how many moview have fewer than 5 ratings?
+most_ratings |> filter(count_rating < 5) |>
+  arrange(count_rating)
+#324 movies
+
+#how many have only one? 136 or about 8 percent.
+most_ratings |> filter(count_rating < 2) |>
+  arrange(count_rating)
+
+#what is the mean rating? About 3.53
+ratings_df |> summarise(mean(rating, na.rm = TRUE))  
+```
+
+### Number of ratings by user
+
+Looking at the number of users represented and a histogram of reviews per user:
+
+```{r}
+rating_counts <- rowSums(!is.na(ratings_df_wide))
+
+rating_counts <- as_tibble(rating_counts)
+
+#average number of ratings per user = 105
+rating_counts |> summarize(mean(value))
+
+#max is 735, so at least one user rated 735 films
+rating_counts |> summarize(max(value))
+
+
+rating_counts |> ggplot(aes(x = value)) +
+  geom_histogram(bins = 40) +
+  labs(title = "Number of Ratings by User", x = "number of ratings") +
+  theme_minimal()
+```
+
+The distribution is left-skewed, predictably (you can't review fewer than 0 movies). There are a some outliers (users who reviewed over 600 movies). A large number of users reviewed fewer than 80 movies.
+
+How many users posted zero ratings?
+
+```{r}
+#how many users rated at least one movie?
+rating_counts |> count(value != 0)
+
+#how many raters total
+count(rating_counts)
+
+#minimum value
+rating_counts |> summarize(min(value))
+
+```
+
+The data set only includes users who rated at least 19 movies (no one rated zero movies).
+
+## Evaluating different recommendations systems
+
+## Minimum number of ratings
+
+I will start with users with only a certain number of ratings: 40. This isn't too far off from the minimum, 19, but allows us to let the recommender "see" 35 ratings for each user.
+
+With 633 users left, we can split the data into 506 (training) and 127 (test) 80/20.
+
+```{r}
+MovieLense40 <- MovieLense[rowCounts(MovieLense) > 40, ]
+
+#how many users do we have left?
+MovieLense40
+```
+
+### Normalizing the ratings
+
+Normalizing the data - there are two ways in recommenderlab: Z-score and centering. When passed through Recommender, the data is normalized automatically, and it's centered by default.
+
+- Centering makes the average 0. It keeps the original score of the numbers. This is better for critical vs non-critical reviewers.
+
+- Z-score divides by the standard deviation.
+
+<https://www.rdocumentation.org/packages/recommenderlab/versions/1.0.6/topics/normalize>
+
+- You can also binarize the data (make it a 0 or 1 for example, depending on whether it's 3 or higher)
+
+Let's visualize normalized ratings.
+
+```{r}
+#graphing what normalized ratings look like
+
+#raw ratings
+image(MovieLense40[1:10, 1:10], main = "Uncentered Ratings")
+
+#centered (normalized)
+image(normalize(MovieLense40[1:10, 1:10], method = "center"), 
+      main = "Normalized Ratings (centered)")
+
+#Z-score normalized
+image(normalize(MovieLense40[1:10, 1:10], method = "Z-score"), 
+      main = "Normalized Ratings (Z-sore)")
+
+image(MovieLense40, main = "Uncentered Ratings (all)")
+```
+
+With just a slice of the data, we can see how different the scores end up looking if we normalize with Z-score vs centering. The last table gives a good idea of how sparsely the data set is populated.
+
+## User-based collaborative filtering
+
+This algorithm looks at a neighborhood of similar users to generate a set of recommendations for a user. It assumes that users who liked the same items previously will continue to like the same movies.
+
+Before using the evaluationscheme method below (part of the recommender package), I tried splitting the test/training data manually, using the same method as in the documentation, and then using predict. This produced zero false positives, likely due to the number of blank ratings. I then used the evaluationscheme function, which allows you to split the data.
+
+### Note on methodology and organization
+
+There are *a lot* of variables for each algorithm: the train/test split, given, whether to use k-fold cross-validation or a train/test split, how to normalize the data, how many neighbors (items in ibcf and users in ubcf), what to consider a good rating. I've designated 4 as a good rating throughout, whch seems like a general best practice for a 1-5 scale. Where relevant, I've kept the train/test split at 80/20. In general, I've tried different givens (from cold-ish start onward) and tested it on centered vs. z-score normalization, then tried it with k-fold cross-validation to see if the results differ. There are also precision-recall graphs that compare IBCF and UBCF to simple recommending a random or popular item to a user.
+
+I've implemented (created) a recommendation algorithm in most places, and I've looked at the suggestions with "predict." However, I've mostly evaluated with "evaluate," since that's what has allowed me to judge how well the tweaks I made to each system are working. Recommenderlab allows you to see TPs and FPs for recommenders, but, as I mention above, I ended up with mostly false positives becuase this is a large data set (though these do factor into my ultimate recommendation). So I've leaned toward the RMSE, MAE, and MSE to judge how well the different algorithms perform. MSE and RMSE are both sensitive to outliers, while MAE isn't.
+
+```{r}
+#splitting - thie is a VERY cold start scenario (10 ratings are given out of 40)
+set.seed(1122)
+scheme <- evaluationScheme(MovieLense40, 
+                           method = "split", 
+                           #percent of users who comprise the test set
+                           train = 0.8, 
+                           #number of ratings 
+                           given = 10, 
+                           goodRating = 4)
+
+scheme
+
+rec1 <- Recommender(getData(scheme, "train"), method = "UBCF")
+
+#predictions - let's see the recommendations for these 6 users
+
+pre <- predict(rec1, MovieLense40[150:155], n = 5)
+pre
+as(pre, "list")
+
+
+
+#check the accuracy 
+results <- evaluate(scheme, method = "UBCF", type = "ratings")
+
+plot(results, annotate=c(1,3), legend="bottomright")
+
+avg(results)
+```
+
+With a cold-ish start and centering, the RMSE is 1.19, MSE is 1.42, and MAE is .94.
+
+Below, we use the 80/20 split above, with 10 visible items, to graph how many true/false positives there are for 1, 3, 5, and 10 recommendations. We'll compare IBCF and UBCF to just recommending a random or popular item. Random = a baseline where you might as not well have a recommender system. Popular is a simple recommender system.
+
+Interestingly, the popular items have the most true positives, followed by user-based. IBCF is performing worse than random. With 10 visible items, it may be best to only recommend popular items. This uses default params for k and nn (centering vs. Z-score normalization), which may put IBCF at a disadvantage: the documentation has k much higher at 100. I used this first, and the results for IBCF were much better.
+
+```{r}
+algorithms <- list(`random items` = list(name = "RANDOM", param = NULL),
+                   `popular items` = list(name = "POPULAR", param = NULL),
+                   `user-based CF` = list(name = "UBCF", param = list(nn = 25)),
+                   `item-based CF` = list(name = "IBCF", param = list(k = 30)))
+
+results_alg <- evaluate(scheme, algorithms, type = "topNList",
+                        n = c(1, 3, 5, 10, 30), progress = FALSE)
+
+plot(results_alg, annotate = 2, legend = "topleft")
+```
+
+Let's try using a z-score normalization method.
+
+```{r}
+set.seed(1122)
+
+#create recommender
+rec2 <- Recommender(getData(scheme, "train"), method = "UBCF",
+                    param = list(normalize = "Z-score"))
+
+results_2 <- evaluate(scheme, method = "UBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_2)
+```
+
+The numbers are very similar to the first attempt, with centering winning on everything but MAE. This may mean Z-score creates more outliers.
+
+### Using a higher number of given ratings
+
+Let's increase the given number by a lot.
+
+```{r}
+set.seed(1122)
+scheme2 <- evaluationScheme(MovieLense40, 
+                           method = "split", 
+                           #percent of users who comprise the test set
+                           train = 0.8, 
+                           #number of ratings 
+                           given = 35, 
+                           goodRating = 4)
+
+scheme2
+
+#create the recommender
+rec3 <- Recommender(getData(scheme2, "train"), method = "UBCF")
+
+results <- evaluate(scheme2, method = "UBCF", type = "ratings")
+
+avg(results)
+```
+
+Metrics are all slightly better. With z-score:
+
+```{r}
+#Z-score
+set.seed(1122)
+
+#create recommender
+rec4 <- Recommender(getData(scheme2, "train"), method = "UBCF",
+                    param = list(normalize = "Z-score"))
+
+results_2 <- evaluate(scheme2, method = "UBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_2)
+```
+
+Models are performing similarly. Z-score does better on MAE, but slightly worse on RMSE and MSE. Again, this may be outlier-related.
+
+Let's graph to see if 30 visible items is appreciably better than (I've changed the given to 30 so every user has at least 10 items that can be tested):
+
+```{r}
+set.seed(1122)
+scheme_alg <- evaluationScheme(MovieLense40, 
+                           method = "split", 
+                           #percent of users who comprise the test set
+                           train = 0.8, 
+                           #number of ratings 
+                           given = 30, 
+                           goodRating = 4)
+
+results_alg_2 <- evaluate(scheme_alg, algorithms, type = "topNList", n = c(1, 3, 5, 10), progress = FALSE)
+
+plot(results_alg_2, annotate = 2, legend = "topleft")
+```
+
+User-based is still doing better than item-based, as is a random suggestion. Simply recommending a popular item is still doing better than everything.
+
+### Using K-fold cross-validation (no training/test split)
+
+```{r}
+#10-fold cross-validation - cold-start (10 ratings)
+set.seed(1122)
+scheme3 <- evaluationScheme(MovieLense40, 
+                           method = "cross-validation", 
+                           k = 10, 
+                           given = 10, 
+                           goodRating = 4)
+
+#create recommenders
+rec5 <- Recommender(getData(scheme3, "train"), method = "UBCF")
+
+rec6 <- Recommender(getData(scheme3, "train"), method = "UBCF",
+                    param = list(normalize = "Z-score"))
+
+
+#results
+
+results_kfold <- evaluate(scheme3, method = "UBCF", type = "ratings")
+
+
+results__kfold_2 <- evaluate(scheme3, method = "UBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_kfold)
+avg(results__kfold_2)
+```
+
+```{r}
+#with 35 visible ratings
+set.seed(1122)
+scheme4 <- evaluationScheme(MovieLense40, 
+                           method = "cross-validation", 
+                           k = 10, 
+                           given = 35, 
+                           goodRating = 4)
+
+
+#create recommenders
+rec7 <- Recommender(getData(scheme4, "train"), method = "UBCF")
+
+rec8 <- Recommender(getData(scheme4, "train"), method = "UBCF",
+                    param = list(normalize = "Z-score"))
+
+results_kfold <- evaluate(scheme4, method = "UBCF", type = "ratings")
+
+
+results__kfold_2 <- evaluate(scheme4, method = "UBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_kfold)
+avg(results__kfold_2)
+```
+
+Both models are slightly worse with K-fold cross-validation, compared to a training/test split.
+
+Trying with K = 5 (5-fold cross validation):
+
+```{r}
+set.seed(1122)
+scheme5 <- evaluationScheme(MovieLense40, 
+                           method = "cross-validation", 
+                           k = 5, 
+                           given = 10, 
+                           goodRating = 4)
+
+
+rec9 <- Recommender(getData(scheme5, "train"), method = "UBCF")
+
+rec10 <- Recommender(getData(scheme5, "train"), method = "UBCF",
+                             parameter = list(normalize = "Z-score"))
+
+
+
+results_kfold <- evaluate(scheme5, method = "UBCF", type = "ratings")
+
+
+results__kfold_2 <- evaluate(scheme5, method = "UBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_kfold)
+avg(results__kfold_2)
+```
+
+K=5 comes with slightly worse metrics than 10-fold validation.
+
+Let's try the model on users with slightly more data:
+
+```{r}
+MovieLense90 <- MovieLense[rowCounts(MovieLense) > 90, ]
+
+#383 users left
+MovieLense90
+
+```
+
+I've also increased the neighborhood size here, to see if more neighbors improves the metrics.
+
+```{r}
+set.seed(1122)
+scheme_big <- evaluationScheme(MovieLense90, 
+                           method = "split", 
+                           #percent of users who comprise the test set
+                           train = 0.8, 
+                           #number of ratings 
+                           given = 65, 
+                           goodRating = 4)
+
+scheme_big
+
+Recommender(getData(scheme_big, "train"), method = "UBCF", param = list(nn = 3))
+
+#neighborhood sizes of 25 (the default) and 50, then 80
+results_big <- evaluate(scheme_big, method = "UBCF", type = "ratings",
+                        param = list(nn = 25))
+
+results_big_2 <- evaluate(scheme_big, method = "UBCF", type = "ratings",
+                        param = list(nn = 50))
+
+results_big_3 <- evaluate(scheme_big, method = "UBCF", type = "ratings",
+                        param = list(nn = 80))
+
+results_big_3z <- evaluate(scheme_big, method = "UBCF", type = "ratings",
+                        param = list(nn = 80, normalize = "Z-score"))
+
+avg(results_big)
+
+avg(results_big_2)
+
+#Z-score and centering are very close
+avg(results_big_3)
+
+avg(results_big_3z)
+```
+
+The larger number of ratings made for a much lower RMSE and MAE. Using a large k for knn brings it down even more.
+
+Let's see if one system performs better as it gives more ratings (a min of 90 recommendations means being able to test more recommendations):
+
+```{r}
+set.seed(1122)
+results_alg_3 <- evaluate(scheme_big, algorithms, type = "topNList", 
+                          n = c(1, 3, 5, 10, 20, 40, 60),progress = FALSE)
+
+plot(results_alg_3, annotate = 2, legend = "topleft")
+```
+
+This looks pretty similar to previous iterations, with IBCF performing worse than recommending random items.
+
+### Finding the optimal value for knn (neighborhood size) with UBCF
+
+```{r}
+#if I run this twice, this removes the object so it doesn't append
+rm(rmse_values)
+
+k_values <- c(3, 5, 10, 20, 30, 40, 50)
+rmse_values <- c()
+
+set.seed(1122)
+scheme_cv <- evaluationScheme(MovieLense40,
+                              method     = "cross-validation",
+                              k          = 10,
+                              given      = 35,
+                              goodRating = 4)
+
+for (k in k_values) {
+  results_k <- evaluate(scheme_cv, method = "UBCF", type = "ratings",
+                        param = list(normalize = "center", nn = k))
+ rmse_values <- c(rmse_values, avg(results_k)[1, "RMSE"])
+}
+
+print(rmse_values)
+
+#plot the results
+plot(k_values, rmse_values, type = "b", 
+     xlab = "k (neighborhood size)", ylab = "RMSE",
+     main = "RMSE vs neighborhood size")
+```
+
+As K goes up, RMSE goes down. The optimal neighborhood size could be much larger than 50.
+
+```{r}
+rm(rmse_values)
+
+k_values <- c(40, 50, 60, 70, 80, 120, 200, 300)
+rmse_values <- c()
+
+set.seed(1122)
+scheme_cv <- evaluationScheme(MovieLense40,
+                              method     = "cross-validation",
+                              k          = 10,
+                              given      = 35,
+                              goodRating = 4)
+
+for (k in k_values) {
+  results_k <- evaluate(scheme_cv, method = "UBCF", type = "ratings",
+                        param = list(normalize = "center", nn = k))
+ rmse_values <- c(rmse_values, avg(results_k)[1, "RMSE"])
+}
+
+print(rmse_values)
+
+#plot the results
+plot(k_values, rmse_values, type = "b", 
+     xlab = "k (neighborhood size)", ylab = "RMSE",
+     main = "RMSE vs neighborhood size")
+```
+
+RMSE keeps going down with a larger neighborhood size, but the reduction becomes less dramatic after about 60. Large neighborhood sizes also come with the risk of underfitting, and they are computationally expensive.
+
+## Item-based collaborative filtering
+
+Here, I'll test the same conditions with an IBCF system. We'll take a look at the RMSE, MSE, and MAE for the same models.
+
+This algorithm focuses on the similarities between items. It recommends items similar to ones a user has liked, based on other users' behavior. It finds movies similar to the ones a user rated highly. My methodology is the same as for UBCF. Overall, with the default settings, IBCF performs worse than UBCF for this data set. Toward the end, I adjust neighborhood size to account for this. I've also included a couple of precision-recall curves to look at the effects of larger neighborhood sizes.
+
+Using the initial train/test split and 10 visible items (scheme):
+
+```{r}
+rec11 <- Recommender(getData(scheme, "train"), method = "IBCF")
+
+results_IBCF_centered <- evaluate(scheme, method = "IBCF", type = "ratings")
+
+avg(results_IBCF_centered)
+
+results_IBCF_z <- evaluate(scheme, method = "IBCF", type = "ratings",
+                             parameter = list(normalize = "Z-score"))
+
+avg(results_IBCF_centered)
+avg(results_IBCF_z)
+```
+
+Centering preforms slightly better overall. The RMSE, MAE, and MSE are all much worse than the same UBCF model.
+
+With 35 ratings given to the recommender, all the metrics get a little better. They are still much worse than UBCF for the same scheme.
+
+```{r}
+results_IBCF_centered2 <- evaluate(scheme2, method = "IBCF", type = "ratings")
+
+results_IBCF_z2 <- evaluate(scheme2, method = "IBCF", type = "ratings",
+                             parameter = list(normalize = "Z-score"))
+
+avg(results_IBCF_centered2)
+avg(results_IBCF_z2)
+```
+
+With k-fold cross-validation and a given of 10 (again, these metrics are all much worse than UBCF for the same scheme):
+
+```{r}
+results_kfold_IBCF <- evaluate(scheme3, method = "IBCF", type = "ratings")
+
+
+results__kfold_IBCF_z <- evaluate(scheme3, method = "IBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_kfold_IBCF)
+avg(results__kfold_IBCF_z)
+```
+
+Z-score normalization is outperforming centering here. It's much worse than the IBCF model with the same parameters.
+
+With a larger given of 35:
+
+```{r}
+results_kfold_ibcf_2 <- evaluate(scheme4, method = "IBCF", type = "ratings")
+
+
+results__kfold_ibcf_z2 <- evaluate(scheme4, method = "IBCF", type = "ratings", 
+                      param = list(normalize = "Z-score"))
+
+avg(results_kfold_ibcf_2)
+avg(results__kfold_ibcf_z2)
+```
+
+Somehow, with a higher given, these are worse the cold-start model for cross-validation. I will skip scheme 5, which just had a different number of cross-validations.
+
+### Increasing k
+
+It's clear that this model needs a much higher k than the default 30. We'll use scheme 2 again (35 visible ratings) and increase the k. These are all centered.
+
+```{r}
+results_k_100 <- evaluate(scheme2, method = "IBCF", type = "ratings",
+                        param = list(k = 100))
+
+results_k_200 <- evaluate(scheme2, method = "IBCF", type = "ratings",
+                        param = list(k = 200))
+
+results_k_300 <- evaluate(scheme2, method = "IBCF", type = "ratings",
+                        param = list(k = 300))
+
+results_k_500 <- evaluate(scheme2, method = "IBCF", type = "ratings",
+                        param = list(k = 500))
+
+#check the results
+avg(results_k_100)
+
+avg(results_k_200)
+
+avg(results_k_300)
+
+avg(results_k_500)
+```
+
+The numbers improve with a larger k.
+
+This uses the data set with users who have rated more than 90 movies, and these are all centered:
+
+```{r}
+results_big_100 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 100))
+
+results_big_500 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 500))
+
+results_big_600 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 600))
+
+#things start to get worse around here
+results_big_700 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 700))
+
+results_big_1000 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 1000))
+
+#this is close to the largest size becuase the database only has ~1600 movies
+results_big_1600 <- evaluate(scheme_big, method = "IBCF", type = "ratings",
+                        param = list(k = 1600))
+
+#check the results
+avg(results_big_100)
+
+avg(results_big_500)
+
+avg(results_big_600)
+
+avg(results_big_700)
+
+avg(results_big_1000)
+
+avg(results_big_1600)
+
+```
+
+The metrics actually get worse after about 600, but at their best, they get close to UBCF results with a higher nn value.
+
+### Looking at true positives and negatives one more time with adjusted neighborhood sizes
+
+The RMSE, MSE, and MAE all go down as the neighborhood sizes go up. This is not true for TPs and TNs because these are measuring different things. The RMSE measures how accurate the rating is, TP/FP measures whether a user watched/rated something in the model's top n items.. With such a large data set, it's easier to get close to the user's rating than it is to pick something they liked and watched. They have the highest chance of having rated a popular movie, which is why the popular algorithm wins every time.
+
+I played with these numbers a little bit, and k = 300 looks better for this data set, helping IBCF edge out random for the first time. Bringing nn to 2 or 3 gives UBCF a higher success rate than IBCF, but that's a little suspicious and might be a result of overfitting. I've left it at 20 here because it's different from the default, but still outperforms random.
+
+```{r}
+
+algorithms2 <- list(`random items` = list(name = "RANDOM", param = NULL),
+                   `popular items` = list(name = "POPULAR", param = NULL),
+                   `user-based CF` = list(name = "UBCF", param = list(nn = 20)),
+                   `item-based CF` = list(name = "IBCF", param = list(k = 300)))
+
+results_alg_4 <- evaluate(scheme_big, algorithms2, type = "topNList",
+                        n = c(1, 3, 5, 10, 20, 40, 60, 80, 100), progress = FALSE)
+
+plot(results_alg_4, annotate = 2, legend = "topleft")
+
+
+```
+
+And if we go very high with nn and k, the model is oversmoothing/underfitting and everyone's preferences start to look the same. UBCF does start to look better with more recommendations.
+
+```{r}
+algorithms3 <- list(`random items` = list(name = "RANDOM", param = NULL),
+                   `popular items` = list(name = "POPULAR", param = NULL),
+                   `user-based CF` = list(name = "UBCF", param = list(nn = 300)),
+                   `item-based CF` = list(name = "IBCF", param = list(k = 1600)))
+
+results_alg_5 <- evaluate(scheme_big, algorithms3, type = "topNList",
+                        n = c(1, 3, 5, 10, 20, 40, 60, 80, 100), progress = FALSE)
+
+plot(results_alg_5, annotate = 2, legend = "topleft")
+```
+
+## Summary and recommendations
+
+There are a lot of different variables at play: the number of ratings the model has access to, knn, how to center, whether to use k-fold cross-validation or use a training/test set. In general, it does seem that k/nn should be much higher than the default values, as these reduce the MSE, MAE, and RMSE.
+
+Sometimes Z-score normalization works better, most of the time regular centering does. The metrics were largely comparable for the same model.
+
+With large enough neighborhood sizes, the RMSE, MAE, and MSE just about evened out for both models (metrics started getting worse for IBCF after about 600, and just kept getting better with diminishing returns for UBCF). In general, a larger neighborhood size meant better metrics, but this runs the risk of overfitting, rating everything the average, or just recommending popular itmes. It's a less customized algorithm, and increasing k is computationally expensive.
+
+**Which model?**
+
+When looking at the TP vs. FP precision-recall curves, UBCF tends to work better with smaller neighborhood sizes and access to fewer rated items, so it's likely to perform better with a cold start system. Because of this, I recommend a UBCF model with neighborhood size of about 60 (the point around which we saw diminishing returns) and a given of 35, which can accommodate most users. The data set where everyone had to have at least 90 ratings was much smaller.
+
+In general, breaking the data into a train/test split gave better results. K-fold cross-validation also takes longer and is more computationally expensive, so I recommend using a train/test split. While centering is a more understandable method of normalization, Z-score gives slightly better metrics for this model.
+
+The recommended model:
+
+```{r}
+set.seed(1122)
+scheme_final <- evaluationScheme(MovieLense40, 
+                           method = "split", 
+                           #percent of users who comprise the test set
+                           train = 0.8, 
+                           #number of ratings 
+                           given = 35, 
+                           goodRating = 4)
+
+
+#check the accuracy 
+results_final <- evaluate(scheme_final, method = "UBCF", type = "ratings",
+                          param = list(nn = 60))
+
+results_final_z <- evaluate(scheme_final, method = "UBCF", type = "ratings",
+                          param = list(nn = 60, normalize = "Z-score"))
+
+avg(results_final)
+
+#the recommended recommender model
+avg(results_final_z)
+
+```
+
+### Recommending popular items
+
+The precisiom-recall curves also show that, for a system without a lot of data, sometimes it makes sense to just recommend popular items, as unpersonalized as that is. In the graph of different models vs. random and popular, popular won by a lot every time. It just doesn't help with discoverability.
+
+## Sources
+
+Joe Domaleski. *UBCF vs. IBCF: Comparing Marketing Recommendation System Algorithms in R.* April 2025. <https://blog.marketingdatascience.ai/ubcf-vs-ibcf-comparing-marketing-recommendation-system-algorithms-in-r-38ff36bf05d3>
+
+Michael Hahlser, recommenderlab: An R Framework for Developing and Testing Recommendation Algorithms. May 2022. <https://arxiv.org/abs/2205.12371>
+
+Claude Sonnet, 4.6. [Large language model] Accessed June 2026. Claude.ai (to make the neighborhood size vs RMSE graph and to figure out that this package uses three separate variables that can all be referred to as k)
