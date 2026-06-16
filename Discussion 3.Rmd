@@ -1,0 +1,32 @@
+---
+title: "Discussion 3"
+author: "Sam Barbaro"
+date: "2026-06-16"
+output: html_document
+---
+
+## Discussion 3
+
+By recommending people more of what they already like, either based on similar items or similar users' behavior, recommenders are more likely to reinforce bias. We see this with social media, where people are segmented according to the things that they are more likely to react to, or that they want to hear.
+
+In Evan Estola's video, he talks about making recommendations that are more ethical even if they are less on-target (e.g., recommending groups to women that are mostly men). I would argue that tech companies, particularly social media, have chosen not do do this in recent years, but to instead do what drives engagement.
+
+### Gender bias
+
+Not purely a recommender system, but Amazon was developing (but did not use) an AI recruiting engine that penalized women: <https://www.reuters.com/article/world/insight-amazon-scraps-secret-ai-recruiting-tool-that-showed-bias-against-women-idUSKCN1MK0AG/>
+
+**Movie review platforms** - Most professional movie critics are men; men tend to like certain types of movies. If something is for you, you're more likely to enjoy it and rate it higher.
+
+### **Promoting content that isn't true**
+
+This is a four-part series that explains why people have different sets of facts: <https://www.npr.org/2025/02/06/1265963821/landslide-engines-1>.
+
+One episode talks about how Facebook, during Covid lockdown, had a button that let you say whether a post made you feel good or bad about the world. They realized that posts that don't make you feel good about the world drove more engagement. Social media that provokes strong emotions makes you spend more time on the platform. Therefore, it was in their interest not to limit false claims on their platform, but to promote them to people who would engage.
+
+### Dynamic pricing 
+
+Companies like Uber and Lyft offer different prices to different users simultaneously. They claim this is due to market conditions, not personal data; however, people who request the same ride seconds apart often receive different pricing. Even if their algorithm doesn't have direct access to personal data about race and gender, this article argues that these characteristics can be inferred based on where the person lives. It also claims that their non-protected characteristics like gait/walking speed, height, and weight, can be inferred from their data.
+
+Newer article about dynamic pricing (2026): <https://www.consumerreports.org/money/questionable-business-practices/uber-lyft-different-prices-for-same-ride-and-fake-discounts-a1093538909/>
+
+Older article about drivers and payment (2020): <https://venturebeat.com/technology/researchers-find-racial-discrimination-in-dynamic-pricing-algorithms-used-by-uber-lyft-and-others>
