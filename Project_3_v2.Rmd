@@ -558,8 +558,6 @@ ALS has better metrics for this data set, but that is misleading. I would recomm
 
 With this data set, it also runs the risk of recommending something the user has already seen and does not like. It's probable that someone saw something but didn't like it in a genre they enjoy.
 
-### Excluding ALS
-
 Here, I've excluded ALS entirely for the above reasons. We can look more closely at how SVF, SVDF, UBCF, popular, and random compare.
 
 ```{r}
