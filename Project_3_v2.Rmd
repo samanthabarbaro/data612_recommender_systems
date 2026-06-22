@@ -1,0 +1,639 @@
+---
+title: "Project 3"
+author: "Sam Barbaro"
+date: "2026-06-17"
+output: html_document
+---
+
+## Project 3
+
+Load packages
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(recommenderlab)
+library(recosystem)
+
+#load MovieLense data
+data("MovieLense")
+```
+
+I will implement ALS and SVD on the movielense matrix. I will compare these results to last week's optimized user-based models to find out which is a better fit.
+
+## ALS
+
+ALS requires a binary matrix (1s and 0s), so here we binarize the data and take an image of it:
+
+```{r}
+#binarize the data
+binarized_matrix <- binarize(MovieLense, minRating=3)
+
+image(binarized_matrix, main = "Binarized Matrix")
+
+image(binarized_matrix[1:50, 1:50])
+
+
+```
+
+It's one shate instead of different shades. This is also a sparser matrix, since we've lost ratings.
+
+### Limitations and pitfalls
+
+It makes more sense to do ALS with a natively binary ratings matrix (for example, if someone has simply watched or not watched a movie or listened/not listened to a song). Already, I've chosen to include ratings of 3, 4, and 5 as 1s; 3 is arguably not a good rating, so, even if this has better results, it might be a worse system from a user perspective.
+
+There's also a possible (highly probable) failure with this system: It might recommend something the user has already watched and didn't like that lines up with their preferences because it shows up in the matrix as a 0 (they rated it 1 or 2). The success metrics may also look inflated compared to SVF or UBCF and IBCF because the model only has to predict a 0 or 1 as opposed to the exact rating - it's easier to get it right if there are only two choices.
+
+### Inspecting the binary matrix
+
+```{r}
+
+#how many ratings in each row?
+
+rating_tibble <- as_tibble(as(binarized_matrix, "matrix"))
+
+
+rating_counts <- rowSums(rating_tibble != 0)
+
+rating_counts
+
+
+#matrix with more than 30 ratings
+MovieLense30 <- binarized_matrix[rowCounts(binarized_matrix) > 30, ]
+
+#how many users do we have left?
+MovieLense30
+
+```
+
+ALS takes a binary matrix and decomposes it into two smaller latent-factor matrices through a process of iteration. These matrices represent latent factors, or categories like romance and comedy (or some combination of them) to predict whether a user will like an item.
+
+```{r}
+
+#implement ALS as a recommender system
+movielense_als <- Recommender(MovieLense30, method = 'ALS') 
+
+set.seed(1122)
+scheme <- evaluationScheme(MovieLense30,
+                           method     = "split",
+                           #train/test split
+                           train      = 0.8,
+                           #model can see all but 25 ratings for each user
+                           given      = -25, 
+                           goodRating = 1)
+
+#what does ALS accept as paramaters? 
+recommenderRegistry$get_entry("ALS", dataType = "binaryRatingMatrix")
+
+```
+
+ALS accepts lambda, alpha, n_factors, n_iterations, min_item_nr. Here's what they mean:
+
+- alpha - not commonly tuned; a higher alpha means the model trusts observed interactions more.
+
+- n_factors - this is k, but it represents dimensionality (how big the resulting matrix is)
+
+- n_iterations - number of optimization cycles
+
+- lambda - a larger lambda penalizes larger weights assigned to latent factors. Too high and the model might overfit; too low and it may underfit.
+
+- min_item_nr - the minimum interactions an item needs to be included in the algorithm (so, if we set this to 5, movies with fewer than 5 positive reviews will be excluded). Not exactly a tuning parameter.
+
+- seed - setting the seed so the result is reproducible (can also be done just before implementing the algorithm)
+
+```{r}
+
+
+#get the results for this first iteration
+set.seed(1122)
+results <- evaluate(scheme, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+#check the results
+avg(results)
+
+```
+
+The true positive rate (total truths correclty detected - tp / tp + fn) increases with more recommendations. I tried running other accuracy metrics (MAE, RMSE, MSE), but they can't be calculated for binary data, so we will look at precision (accuracy) and recall (TPR) .
+
+I will try with different n_factors (dimensionality) and lambda to see how that affects the results. These are both factors that can contribute to over- and underfitting.
+
+### Modifying n_factors and lambda
+
+Taking n_factors to 30 and lambda to .3
+
+```{r}
+set.seed(1122)
+results_2 <- evaluate(scheme, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40), 
+                    parameter = list(n_factors = 30, 
+                                     lambda = .3))
+
+
+avg(results_2)
+```
+
+This model performs slightly better than the previous model (though it starts off a tiny bit worse). I will try with just a higher k and the same lambda, then the larger lambda and the same k.
+
+```{r}
+results_3 <- evaluate(scheme, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40), 
+                    parameter = list(n_factors = 30, 
+                                     lambda = .1))
+
+
+avg(results_3)
+
+```
+
+This is slightly worse than the previous version if we focus on precision and recall (though it gets better with more recommendations).
+
+```{r}
+
+results_4 <- evaluate(scheme, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40), 
+                    parameter = list(n_factors = 10, 
+                                     lambda = .3))
+
+avg(results_4)
+
+```
+
+This is a little more comparable to the initial model. Generally for ALS the TPR and precision are very high.
+
+Interestingly, if I use a higher lambda, results start strong and get worse. Why? Perhaps because a higher lambda can make the results more generic, which may work for a small number of recommendations (e.g. most popular), but not for anything that accounts for taste/the long tail.
+
+```{r}
+results_5 <- evaluate(scheme, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40), 
+                    parameter = list(n_factors = 10, 
+                                     lambda = .6))
+
+avg(results_5)
+```
+
+### Testing for optimal dimensionality (k)
+
+```{r}
+factors_to_test <- c(5, 10, 20, 30, 40, 50)
+
+set.seed(1122)
+results_by_factors <- lapply(factors_to_test, function(k) {
+  evaluate(scheme,
+           method = "ALS",
+           type   = "topNList",
+           n      = c(5, 10, 20, 40),
+           parameter = list(n_factors = k, lambda = 0.1, seed = 1))
+})
+
+
+#check results
+avg(results_by_factors[[1]])
+#5 suggestions has the highest precision but the lowest true positive rate
+
+#Pull precision at each k into a plottable data frame
+
+
+prec_df <- do.call(rbind, lapply(seq_along(factors_to_test), function(i) {
+  a <- avg(results_by_factors[[i]])
+  data.frame(n_factors = factors_to_test[i],
+             n         = a[, "n"],
+             precision = a[, "precision"])
+}))
+
+#graph results
+ggplot(prec_df, aes(x = n, y = precision, color = factor(n_factors), group = factor(n_factors))) +
+  geom_line() + geom_point() +
+  labs(title = "ALS Precision by Dimensionality and Number of Suggestions",
+       x = "Number of Suggestions", y = "Precision", 
+       color = "Dimensionality (n_factors)") +
+  theme_minimal()
+```
+
+Precision goes down with the number of suggestions (perhaps the first recommendations tend the be the most confident/on target). It's generally highest for a dimensionality of 20 or 30 (however, it's lowest for 20 with only 5 suggestions, and switches between 20 and 30 as suggestions increases).
+
+Graphing true positive rate/recall:
+
+```{r}
+tpr_df <- do.call(rbind, lapply(seq_along(factors_to_test), function(i) {
+  a <- avg(results_by_factors[[i]])
+  data.frame(n_factors = factors_to_test[i],
+             n         = a[, "n"],
+             TPR       = a[, "TPR"])
+}))
+
+ggplot(tpr_df, aes(x = n, y = TPR, color = factor(n_factors), group = factor(n_factors))) +
+  geom_line() + geom_point() +
+  labs(title = "ALS TPR (recall) by n_factors (dimensionality) and 
+       List Length (suggestions)",
+       x = "Number of Suggestions", y = "TPR (recall)", color = "Dimensionality") +
+  theme_minimal()
+```
+
+Recall is generally highest (at higher volumes) for dimensionalities of 20 and 30 as well. 50 is too large, and perhaps overfitted.
+
+## SVD
+
+Creating the real ratings matrix with min 30 ratings. This is also not exactly equivalent to the ALS grid (ALS will have fewer true ratings, since anything 1 or 2 was converted to a zero), so this creates issues with comparing the two. This may be evened out by the fact that ALS only has to predict a 0 or 1, whereas SVD must predict a score.
+
+```{r}
+MovieLense30_nb <- MovieLense[rowCounts(MovieLense) > 30, ]
+
+```
+
+Unlike ALS, SVD requires imputation. Choosing an imputation type:
+
+Mean imputation is the standard for the recommenderlab package. It imputes the mean and adjusts for the user and item biases (like the baseline predictor). Recommenderlab automatically uses mean imputation.
+
+There's also SVDF, a more advanced and computationally expensive method, that does not require prior imputation.
+
+Similar to ALS, SVD creates three (not two) smaller matrices that account for latent factors in users and items. SVD does not take a long time to run in recommenderlab (it actually takes much less time than ALS).
+
+Let's look at the different parameters:
+
+```{r}
+#checking parameters
+recommenderRegistry$get_entry("SVD", dataType = "realRatingMatrix")
+
+```
+
+### Variables
+
+- k - dimensionality, as with ALS
+
+- maxiter - number of iterations
+
+- normalization - centered is the default (imputation, which is required for SVD). You can also use z-score. This imputes the expected rating for each user/item combo using a global baseline estimate, based on the user's other ratings and the item's other ratings.
+
+I will go with centered, since it seems like the most neutral option.
+
+Create a recommender:
+
+```{r}
+svd_model <- Recommender(MovieLense30_nb, method = "SVD")
+
+```
+
+Test the default model's results:
+
+```{r}
+set.seed(1122)
+scheme_svd <- evaluationScheme(MovieLense30_nb,
+                           method     = "split",
+                           train      = 0.8,
+                           given      = -25, 
+                           goodRating = 4)
+
+#get the results for this first iteration
+set.seed(1122)
+results_5 <- evaluate(scheme_svd, 
+                    method = "SVD",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+#check the results
+avg(results_5)
+
+
+```
+
+Precision and TPR are much lower than ALS. Maybe this is expected because we are trying to predict exact ratings, not just a 1 or a 0. We will look at different dimensionalities, starting with 20.
+
+```{r}
+results_6 <- evaluate(scheme_svd, 
+                    method = "SVD",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40), 
+                    parameter = list(k = 20))
+
+avg(results_6)
+```
+
+The precision and recall are all slighlty better. Let's check systematically:
+
+```{r}
+k_to_test <- c(5, 10, 20, 30, 40, 50)
+
+set.seed(1122)
+results_by_k <- lapply(k_to_test, function(k) {
+  evaluate(scheme_svd,
+           method = "SVD",
+           type   = "topNList",
+           n      = c(5, 10, 20, 40),
+           parameter = list(k = k))
+})
+
+# check results
+avg(results_by_k[[1]])
+
+# Precision data frame
+prec_df_svd <- do.call(rbind, lapply(seq_along(k_to_test), function(i) {
+  a <- avg(results_by_k[[i]])
+  data.frame(k         = k_to_test[i],
+             n         = a[, "n"],
+             precision = a[, "precision"])
+}))
+
+ggplot(prec_df_svd, aes(x = n, y = precision, color = factor(k), group = factor(k))) +
+  geom_line() + geom_point() +
+  labs(title = "SVD Precision by Dimensionality (k) and Number of Suggestions",
+       x = "Number of Suggestions", y = "Precision",
+       color = "Dimensionality (k)") +
+  theme_minimal()
+
+# TPR data frame
+tpr_df_svd <- do.call(rbind, lapply(seq_along(k_to_test), function(i) {
+  a <- avg(results_by_k[[i]])
+  data.frame(k   = k_to_test[i],
+             n   = a[, "n"],
+             TPR = a[, "TPR"])
+}))
+
+ggplot(tpr_df_svd, aes(x = n, y = TPR, color = factor(k), group = factor(k))) +
+  geom_line() + geom_point() +
+  labs(title = "SVD TPR (recall) by Dimensionality (k) and Number of Suggestions",
+       x = "Number of Suggestions", y = "TPR (recall)",
+       color = "Dimensionality (k)") +
+  theme_minimal()
+```
+
+In general, a higher k means a higher recall or true positive rate. This is not as true for precision - for a smaller number of suggestions, higher ks tend to do worse; also, larger larger dimensions drop off after about 30 suggestions. This could be due to larger dimensionalities not capturing the long tail as well.
+
+It's worth noting that the drop-off is different from ALS's - SVD's metrics stays really low until about 20 suggestions, then increase dramatically. ALS increases sharply until about 20, then the returns diminish (precision declines). Also, ALS performs way better than SVD in terms of precision and recall. This, again, may be due to exact ratings vs. just having to capture a 0 or 1.
+
+## Comparing to UBCF
+
+UBCF was the top-performing model for project 2. Let's see how it compares to ALS and SVD.
+
+```{r}
+set.seed(1122)
+scheme_ubcf <- evaluationScheme(MovieLense30_nb,
+                           method     = "split",
+                           train      = 0.8,
+                           given      = -25, 
+                           goodRating = 4)
+
+#get the results for this first iteration
+set.seed(1122)
+results_7 <- evaluate(scheme_ubcf, 
+                    method = "UBCF",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+avg(results_7)
+
+
+#with more optimized paramaters
+
+results_8 <- evaluate(scheme_ubcf, method = "UBCF", 
+                      type = "topNList", 
+                    n = c(5, 10, 20, 40),
+                    parameter = list(nn = 60))
+
+avg(results_8)
+```
+
+UBCF does better than SVD, though the optimized model comes close to SVD and does worse in some places. It's worth noting that the precision and recall are actually worse for the optimized model (I'd previously used RMSE and MAE) than for the default settings.
+
+### SVDF
+
+SVDF (funk-SVD) - it uses stochastic gradient descent (an optimization algorithm) to systematically turn the rating matrix into three matrices. This is supposed to minimize error and prevent the algorithm from overfitting. Imputation and centering are not required because SGD fills in the matrix.
+
+It takes forever to run despite stochastic gradient descent's efficiency, so we will only try it once with the default settings.
+
+```{r}
+
+#check the params
+recommenderRegistry$get_entry("SVDF", dataType = "realRatingMatrix")
+
+set.seed(1122)
+results_9 <- evaluate(scheme_svd, 
+                    method = "SVDF",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+#check the results
+avg(results_9)
+
+```
+
+it does much better than SVD with no paramater adjustments. Metrics are about half the best version of ALS (like ALS, precision declines with more suggestions while recall increases). Compared to UBCF, precision for 40 recommendations is .075, recall is .21; UBCF's optimized model shows .057 for recall and .016 for precision. Without optimizing anything, this model beats UBCF.
+
+### Comparing all results
+
+First, I'm going to create a more comparable model for ALS that treats 4 as a good rating instead of 3. I'll include this as well as the original ALS model to compare to the best versions of other models.
+
+```{r}
+binarized_matrix_3 <- binarize(MovieLense, minRating=4)
+
+set.seed(1122)
+scheme_als_2 <- evaluationScheme(binarized_matrix_3,
+                           method     = "split",
+                           train      = 0.8,
+                           given      = -25, 
+                           goodRating = 1)
+
+
+set.seed(1122)
+results_12 <- evaluate(scheme_als_2, 
+                    method = "ALS",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+avg(results_12)
+```
+
+This performs a little worse than the original ALS model.
+
+Let's compare all the results side-by-side in a table and bar chart. I will also add popular and random for baselines. When comparing to UBCF and IBCF, popular performed much better than any model every time.
+
+```{r}
+#add popular, so we have a baseline
+results_10 <- evaluate(scheme_ubcf, method = "Popular", 
+                      type = "topNList", 
+                    n = c(5, 10, 20, 40)
+                    )
+
+avg(results_10)
+
+#add random for a lower baseline
+results_11 <- evaluate(scheme_ubcf, method = "Random", 
+                      type = "topNList", 
+                    n = c(5, 10, 20, 40)
+                    )
+
+avg(results_11)
+
+#best results from each method - pull them together
+
+
+extract_avg <- function(result, method_name) {
+  as.data.frame(avg(result)) |>
+    mutate(Method = method_name)
+}
+
+combined_df <- bind_rows(
+  extract_avg(results_by_factors[[3]], "ALS (k=20)"),   
+  extract_avg(results_by_k[[3]],       "SVD (k=20)"),   
+  extract_avg(results_7,               "UBCF (default)"),
+  extract_avg(results_9,               "SVDF (default)"),
+  extract_avg(results_10,              "Popular"),
+  extract_avg(results_11,              "Random"),
+  extract_avg(results_12,              "ALS (min rating 4)")
+)
+
+#Comparison table at ten recommendations
+
+combined_df |>
+  filter(n == 10) |>
+  select(Method, precision, recall, TPR, FPR) |>
+  knitr::kable(digits = 4, caption = "Model Comparison at 10 Recommendations")
+
+#Comparison at 40 recommendations
+
+combined_df |>
+  filter(n == 40) |>
+  select(Method, precision, recall, TPR, FPR) |>
+  knitr::kable(digits = 4, caption = "Model Comparison at 40 Recommendations")
+
+#bar chart
+combined_df |>
+  filter(n == 40) |>
+  select(Method, precision, recall) |>
+  pivot_longer(c(precision, recall), names_to = "Metric", values_to = "Value") |>
+  ggplot(aes(x = Method, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  labs(title = "Precision & Recall at 40 Recommendations", x = NULL, y = NULL) +
+  theme_minimal()
+
+```
+
+Again, ALS has the best metrics regardless of n, followed by popular, then SVDF. SVD does the worst, possibly due to the imputation method. Interestingly, FPR is similar-ish for all models except ALS.
+
+Comparing precision and recall, and creating an ROC curve or each model:
+
+```{r}
+#Precision graph
+
+ggplot(combined_df, aes(x = n, y = precision, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Precision by Method (Top Configurations)",
+       x = "Number of Recommendations", y = "Precision") +
+  theme_minimal()
+
+#Reall / true positive rate
+
+ggplot(combined_df, aes(x = n, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Recall (TPR) by Method (Top Configurations)",
+       x = "Number of Recommendations", y = "Recall (TPR)") +
+  theme_minimal()
+
+#ROC curve
+
+ggplot(combined_df, aes(x = FPR, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point(shape = 3) +
+  labs(title = "ROC Curve by Method (Top Configurations)",
+       x = "FPR", y = "TPR") +
+  theme_minimal()
+```
+
+In terms of precision, ALS beats everything. SVD edges out random more with more recommendations, but the precision is only slightly better (it generally doesn't perform well). Popular and SVDF are close, and get closer with more recommendations. Results are similar for the TPR graph, with popular edging out SVDF.
+
+In the ROC curve, ALS beats everything again. Popular beats everything else, but SVDF outperforms UBCF and SVD. SVD is closer to random than I thought it would be – it only gets better with more recommendations. ALS has the fewers false positives. While SVDF and popular have similar false positive rates, SFDF's TPR is slightly better. UBCF has a more constant rate of TPs and FPs, while SVD gets better.
+
+### Excluding ALS
+
+ALS has better metrics for this data set, but that is misleading. I would recommend it for a data set with implicit ratings (whether someone watched or didn't watch something), which is what it's designed for, but not this data set, which I converted to a binary matrix. It has an easier job to do - just guess 1 or 0. It has the best metrics because we are measuring slightly different things - whether the rating was 3/4 or higher (it's now a 1 in the binary matrix) vs. what exact score the model thinks the user would give something. It also has access to a larger proportion of a user's ratings from the start (25 is a larger portion of ratings when some have been converted to 0).
+
+With this data set, it also runs the risk of recommending something the user has already seen and does not like. It's probable that someone saw something but didn't like it in a genre they enjoy.
+
+### Excluding ALS
+
+Here, I've excluded ALS entirely for the above reasons. We can look more closely at how SVF, SVDF, UBCF, popular, and random compare.
+
+```{r}
+combined_df_2 <- bind_rows(
+  extract_avg(results_by_k[[3]],       "SVD (k=20)"),   
+  extract_avg(results_7,               "UBCF (default)"),
+  extract_avg(results_9,               "SVDF (default)"),
+    extract_avg(results_10,              "Popular"),
+  extract_avg(results_11,              "Random")
+)
+
+
+#Comparison at 10
+
+combined_df_2 |>
+  filter(n == 10) |>
+  select(Method, precision, recall, TPR, FPR) |>
+  knitr::kable(digits = 4, caption = "Comparison at 10 Recommendations")
+
+#bar chart
+combined_df_2 |>
+  filter(n == 40) |>
+  select(Method, precision, recall) |>
+  pivot_longer(c(precision, recall), names_to = "Metric", values_to = "Value") |>
+  ggplot(aes(x = Method, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  labs(title = "Precision & Recall at N=40", x = NULL, y = NULL) +
+  theme_minimal()
+
+```
+
+Popular is outperforming SVDF, but SVDF comes much closer than other models.
+
+It's kind of surprising that two similar models perform very differently: SVD and SVDF have the same idea behind them - they just use a different method for filling in missing ratings. SVDF uses SGD. SGD must be a better method for predicting ratings than a generic baseline.
+
+```{r}
+
+#Precision
+
+ggplot(combined_df_2, aes(x = n, y = precision, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Precision by Method (Top Configurations)",
+       x = "Number of Recommendations", y = "Precision") +
+  theme_minimal()
+
+#Reall/true positive rate
+
+ggplot(combined_df_2, aes(x = n, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Recall (TPR) by Method (Top Configurations)",
+       x = "Number of Recommendations", y = "Recall (TPR)") +
+  theme_minimal()
+
+#ROC curve
+
+ggplot(combined_df_2, aes(x = FPR, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point(shape = 3) +
+  labs(title = "ROC Curve by Method (Top Configurations)",
+       x = "FPR", y = "TPR") +
+  theme_minimal()
+```
+
+### Recommendations
+
+ALS can't be compared to other models because it has a different (easier) task: predicitng a 0 or 1. It also works off a different data set.
+
+SVDF is my recommended model here. SVDF comes closer than other models to popular, in terms of the ROC curve, precision, and recall. It doesn't outperform popular, but the recommendations made with SVDF may be more valuable to the user if they're aligned with interests rather than simply something everyone likes.
+
+Drawbacks: SVDF may fail in cold start situations. It can't impute with zero ratings, and extremely sparse data means more guessing. I only used it once because it's computationally expensive. It takes a long time to train, so updating it would be harder than other models.
+
+In the case of very sparse data, I recommend a combination popular-SVDF system that recommends popular items at first and switches to SVDF after the user has a certain number of ratings.
+
+### Sources
+
+Michael Hahlser, recommenderlab: An R Framework for Developing and Testing Recommendation Algorithms. May 2022. <https://arxiv.org/abs/2205.12371>
+
+Claude Sonnet, 4.6. [Large language model] Accessed June 2026. Claude.ai (to make the k vs TPR and precision graphs)
