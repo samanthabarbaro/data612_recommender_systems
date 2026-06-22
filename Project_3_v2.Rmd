@@ -520,7 +520,7 @@ combined_df |>
 
 Again, ALS has the best metrics regardless of n, followed by popular, then SVDF. SVD does the worst, possibly due to the imputation method. Interestingly, FPR is similar-ish for all models except ALS.
 
-Comparing precision and recall, and creating an ROC curve or each model:
+Comparing precision and recall, and creating an ROC curve or each model (these are n**ot strictly ROC curves** because I'm not changing a threshold, just the number of recommendations, but they graph TPR vs. FPR. I've called them ROC because of the x and y axes, but they are slightly different):
 
 ```{r}
 #Precision graph
