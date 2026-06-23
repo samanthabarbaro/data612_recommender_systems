@@ -1,0 +1,22 @@
+---
+title: "Research Discussion Assignment 4"
+author: "Sam Barbaro"
+date: "2026-06-23"
+output: html_document
+---
+
+## Mitigating the Harm of Recommender Systems
+
+"Up Next: A Better Recommendation System" and "YouTube, the Great Radicalizer" discuss how recommendations become progressively more extreme as a user watches or clicks through. Content platforms do this to promote engagement (these articles were written in 2018, and now most social media sites do this). Here are some strategies to help mitigate this.
+
+- Not prioritize that content: Algorithms can de-prioritize false, misleading, hateful, or polarizing content.
+
+- Fact-check: Both of these articles discuss is conspiracy theories. Platforms could decommission or deprioritize content users flag as false or is identified as clearly false in some other way (e.g., fact checkers or using AI). Instagram used to include a message on the bottom of political posts that said the content had not been verified. Some posts would also be flagged for containing incorrect information (you'd have to acknowledge this before viewing).
+
+- Treat interests as more general: For example, if someone watches political videos, classify them as interested in politics rather than a specific subset of politics. Then, incorporate different perspectives so they receive a diverse set of recommendations.
+
+- Show where users are based: When twitter/X disclosed locations, users discovered that many far-right Ameircan politics accounts were based in other countries (verified accounts were monetized, so users everywhere were incentivized to create polarizing, false content that drove engagement). If users had known where the accounts were based from the beginning, they might have seen these accounts as less trustworthy.
+
+- Factor in volume: Make it such that a user has to engage with a lot of posts of a single type, not just one or two, before the algorithm starts recommending more of that type. The pinterest example in the *Wired* article was a good example of this – going down a rabbit hole once doesn't mean you want to see exclusively those kinds of posts. It may help if users could also manually select what they want prioritized or no longer want to see.
+
+- Sacrifice engagement: All of these suggestions might result in a "worse" recommendation or users not continuing to watch/engage. Essentially, radical, outrageous content keeps users engaged. Platforms would have to prioritize more moderate content that might result in people using their product less.
