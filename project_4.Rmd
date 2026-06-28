@@ -30,7 +30,7 @@ count(user_ratings)
 count(item_info)
 
 #number of ratings per user: 
-user_ratings |> count(user_id)
+#user_ratings |> count(user_id)
 
 #number of users
 n_distinct(user_ratings$user_id)
@@ -82,7 +82,7 @@ rating_counts <- rowSums(!is.na(anime_table |> select(-user_id)))
 
 table(rating_counts)
 
-rating_counts_2 <- as.tibble(rating_counts)
+rating_counts_2 <- as_tibble(rating_counts)
 
 
 #histogram of ratings
@@ -157,7 +157,7 @@ item_features <- anime_rows |>
 
 ### Creating a recommender: content-based collaborative filtering
 
-Test to find common items  - I chose to identify anime by title, not ID, which can get messy when matching two matrices. With this many entries, weird characters are likely to import. Here, I make sure everything that's in the user matrix is in the item matrix.
+Test to find common items - I chose to identify anime by title, not ID, which can get messy when matching two matrices. With this many entries, weird characters are likely to import. Here, I make sure everything that's in the user matrix is in the item matrix.
 
 ```{r}
 common_items <- intersect(rownames(item_features),
@@ -178,21 +178,20 @@ length(missing2)
 
 There are no items that have been rated by users that aren't in the item matrix, but there are items that have not been rated by users. This makes sense - I am only using a portion of the original data set.
 
-Calculate cosine similarity between items (this takes a long time):
+Calculate cosine similarity between items:
 
 ```{r}
 library(proxy)
-# compute cosine similarity and create item_sim matrix (faster than simil)
-mat <- as.matrix(item_features_aligned)
-norm <- sqrt(rowSums(mat^2))
-mat_norm <- mat / (norm + 1e-9)
-item_sim <- mat_norm %*% t(mat_norm)
+# compute cosine similarity 
+
+item_sim <- as.matrix(simil(as.matrix(item_features), method = "cosine"))
+item_sim_matrix <- as.matrix(item_sim)
 ```
 
-Predict scores:
+Predict scores with 15 visible ratings:
 
 ```{r}
-cbf_predict <- function(user_ratings, item_sim, n = 10) {
+cbf_predict <- function(user_ratings, item_sim, n = 30) {
   rated_idx <- which(!is.na(user_ratings))
   unrated_idx <- which(is.na(user_ratings))
   
@@ -252,7 +251,7 @@ cat("Recall@30:   ", mean(recall_list, na.rm = TRUE), "\n")
 cat("RMSE:        ", mean(rmse_list, na.rm = TRUE), "\n")
 ```
 
-The precision and recall aren't great, possibly due to the small sample size of users. RMSE is under 1, which is pretty good.
+The precision and recall aren't great, possibly due to the small sample size of just 200 users. RMSE is under 2, and similar to UBCF (this is a 1-10 scale instead of a 1-5).
 
 ### Creating a recommender - UBCF
 
@@ -263,8 +262,8 @@ set.seed(1122)
 scheme <- evaluationScheme(real_anime_matrix20, 
                            method = "split", 
                            train = 0.8, 
-                           #giving the model access to 15 ratings because 
-                           #the minimum total is 20
+                           #giving the model access to 15 ratings
+                           #most users will have a few more than this
                            given = 15, 
                            #ratings are on a 1-10 scale
                            goodRating = 6)
@@ -294,7 +293,7 @@ results_2 <- evaluate(scheme,
 avg(results_2)
 ```
 
-UBCF takes a long time to run due to the size of the data set. The RMSE and MSE are kind of high (though this is a 1-10 scale instead of a 1-5), so the error is expected to be higher. Precision is pretty high; recall is low.
+UBCF takes a long time to run due to the size of the data set. The RMSE and MSE are 1.58 and 2.5; RMSE is slightly higher than CBF. Precision and recall both outperform CBF.
 
 In practice, it is a good idea to optimize the neighborhood size, but in this case, I will keep the default settings because the algorithm already takes a long time to run and the purpose of this project is to see how adding other elements, like diversity, affect accuracy.
 
@@ -411,7 +410,7 @@ pre3 <- predict(rec3, real_anime_matrix20[150:155], n = 5)
 as(pre3, "list")
 ```
 
-The lists are similar for these users, excluding shows or movies they've already seen. The RMSE Is pretty comparable to UBCF, and precision/recall are better.
+The predicted lists are similar for these users, excluding shows or movies they've already seen. The RMSE is lower than UBCF, and precision/recall are higher. The same is true for CBF. SVD's RMSE comes close, so while the model is bad at picking true positives (choosing items the user has watched) it's good at making accurate predictions.
 
 ## Random: establishing a floor
 
@@ -505,7 +504,7 @@ ggplot(combined_df, aes(x = FPR, y = TPR, color = Method)) +
 
 ```
 
-Based on the ROC curve, SVD does worse than random, possibly because the data set is so sparse, and there are only a few false positives and true positives overall (this may just be margin of error). With a large rating scale, 1-10, SVD may also struggle to normalize.
+Based on the ROC curve, SVD does worse than random, possibly because the data set is so sparse, and there are only a few false positives and true positives overall. With a large rating scale, 1-10, SVD may also struggle to normalize.
 
 Popular does better in every case, but UBCF improves with more recommendations and is better than random.
 
@@ -570,11 +569,15 @@ rmse_df |> arrange(desc(RMSE)) |>
   theme(legend.position = "none")
 ```
 
-CF has the lowest RMSE. Precision and recall might not be great, but the model is able to predict scores pretty accurately. SVD and popular (popular items score well) are close, while UBCF is slightly worse, and random is very high.
+CF is in the middle for RMSE. Precision and recall might not be great, but the model is able to predict scores better than UBCF. SVD and popular (popular items score well) are close, while UBCF is slightly worse, and random is very high. SVD's RMSE comes close, so, again, while the model is bad at picking true positives (choosing items the user has watched) it's good at making accurate predictions on the ones it does choose. It may be better at helping users discover items they haven't explored yet.
+
+However, because SVD's precision and recall were so low, I'm only going to modify UBCF and CBF to include other types of recommendations.
 
 ### Adding recommendation diversity
 
-I'll add recommendation diversity in two ways . First, I'm adding a random element to the UBCF recommender (20% random), which should give the results variety but make the metrics slightly worse. I'm using a smaller set of 800 users, since the hybrid recommender took a long time to run (20+ minutes).
+I'll add recommendation diversity in two ways . First, I'm adding a random element to the UBCF recommender (20% random), which should give the results variety but make the metrics slightly worse. I'm using a smaller set of 800 users, since the hybrid recommender took a long time to run (\~20 minutes).
+
+### UBCF + Random
 
 ```{r}
 # sample 800 users
@@ -631,7 +634,9 @@ acc_topn
 
 ```
 
-Adding random recommendations made precision, recall, and RMSE a lot worse, predictably (this may also have to do with the smaller user set, but I was able to run this once on the original data set and the result was the same).
+Adding random recommendations made precision, recall, and RMSE a lot worse, predictably (this may also have to do with the smaller user set, but I was able to run this once on the original data set and the result was similar).
+
+### UBCF + Popular
 
 Another way to add diversity is to include popular recommendations: items with broad appeal will be interspersed with more personalized recommendations. This makes sense for anime more than, for example, books, since the medium itself is already an interest.
 
@@ -673,11 +678,11 @@ acc_topn2 <- calcPredictionAccuracy(preds_topn2,
 acc_topn2
 ```
 
-The RMSE came down a bit, and it's a bit closer to popular and SVD. Precision and recall both went down as well .
+The RMSE came down a bit, and it's a little closer to popular and SVD. Precision and recall both went down as well.
 
-### Combining CBF with diversity. 
+### Combining CBF with diversity
 
-This uses Maximal Marginal Relevance, which re-ranks predictions based on similarity to items it already predicted. It picks the top n (30) items, but one by one, balancing the list based on similarity to previously selected itmes. A lambda of .7 means 70% relevance, 30% avoiding redundant/similar choices.
+This uses Maximal Marginal Relevance, which re-ranks predictions based on similarity to items it already predicted. It picks the top n (30) items, but one by one, balancing the list based on similarity to previously selected itms. A lambda of .7 means 70% relevance, 30% avoiding redundant/similar choices.
 
 ```{r}
 # use cosine similarity previously calculated (no need to calculate it again)
@@ -748,7 +753,7 @@ cat("Recall@30:   ", mean(recall_list_cd, na.rm = TRUE), "\n")
 cat("RMSE:        ", mean(rmse_list_cd, na.rm = TRUE), "\n")
 ```
 
-RMSE is lower than anything so far. Precision and recall are slightly better than the original model.
+RMSE is actually a little better than the original model, as are precision and recall. This could be because alternating between genres give the model the option make predictions from different pools. So, in a situation where each genre would have a bunch of top options that many people have seen, diversifying predictions may make it easier to predict ratings.
 
 ### Comparing results with novelty and diversity
 
@@ -780,6 +785,8 @@ rmse_df_hybrid |> arrange(desc(RMSE)) |>
   theme_minimal() + 
   theme(legend.position = "none")
 ```
+
+Popular still has the lowest RMSE, but UBCF-Popular comes close, and CBF with diversity performs better than the original CBF algorithm.
 
 ```{r}
 cbf_row2 <- data.frame(
@@ -822,13 +829,18 @@ combined_df3 |>
   ggplot(aes(x = Method, y = Value, fill = Metric)) +
   geom_col(position = "dodge") +
   labs(title = "Precision & Recall at 30 Suggestions", x = NULL, y = NULL) +
-  theme_minimal()
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45))
 
 ```
 
+For both UBCF hybrid models, precision and recall are significantly worse. For CBF as a hybrid recommender, recall improved, but not precision.
+
 ## Conclusion
 
-Combining UBCF with popular resulted in a lower RMSE, even with a smaller data set. CBF with some diversity had the lowest RMSE of all; it also incorporates a more sophisticated model than mixing UBCF with random or popular. As predicted, adding random recommendations to the UBCF algorithm made the RMSE worse. Having a bunch of random suggestions thrown in probably does not improve the user experience for most people. Recommending popular items, while it improves numbers in testing, might not add a lot of value for many users, since they likely already know about these items. It's almost like giving the model a cheat sheet of what most users have watched. In terms of precision and recall, all the hybrid models did worse than the originals, which was expected: They were all intentionally picking less on-target recommendations.
+Having CBF predict a more diverse set of items resulted in a lower RMSE. Recall and precision also improved slightly, which suggests that diversifying genre recommendations allows the model to find more of the relevant cases. This test was only run on a pool of 200 users, so, it's possible that if run on the entire data set, it could perform even better. CBF + diversity also incorporates a more sophisticated model than mixing UBCF with random or popular recommendations.
+
+As predicted, adding random recommendations to the UBCF algorithm made the RMSE, precision, and recall worse. Having a bunch of random suggestions thrown in probably does not improve the user experience for most people. Recommending popular items, while it improves RMSE in testing, might not add a lot of value for many users, since they likely already know about these items. It's almost like giving the model a cheat sheet of what most users have watched. Precision and recall were also worse, possibly because UBCF allowed the model to identify most popular items through user filtering, and it ended up picking from less popular items than the pure popular model.
 
 For a hybrid recommender, I would pick CBF-diversity. It takes user preferences and builds in different genre recommendations based on their interests. That seems like a better experience than being recommended all Gundam anime because that's a large percentage of what a user watched or what they generally rated better.
 
