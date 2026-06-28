@@ -1,0 +1,842 @@
+---
+title: "Project 4"
+author: "Sam Barbaro"
+date: "2026-06-24"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(recommenderlab)
+```
+
+## Load the data set
+
+This is part of an anime data set scraped from myanimelist. I used the first million rows of user data and the entire item data set. This is not the full data set.
+
+<https://www.kaggle.com/datasets/CooperUnion/anime-recommendations-database?resource=download>
+
+```{r}
+#read CSVs
+user_ratings <- read.csv('https://raw.githubusercontent.com/samanthabarbaro/data612_recommender_systems/refs/heads/main/animeratings.csv', na.strings = c("", "NA", "null", "NULL"),  header = TRUE)
+
+item_info <- read.csv('https://raw.githubusercontent.com/samanthabarbaro/data612_recommender_systems/refs/heads/main/anime.csv', na.strings = c("", "NA", "null", "NULL"),  header = TRUE)
+
+#number of user ratings
+count(user_ratings)
+
+#number of shows/movies
+count(item_info)
+
+#number of ratings per user: 
+user_ratings |> count(user_id)
+
+#number of users
+n_distinct(user_ratings$user_id)
+```
+
+We have over 1 million anime ratings by about 10k users.
+
+### Create the user-item matrix
+
+If a user marked an anime as watched but didn't rate it, it's scored as -1. I am going to filter those out because we are looking at algorithms that predict scores, and this would throw off the baseline significantly. However, it would be good for an implicit ratings set. Anime is a good candidate for implicit ratings - there are movies here, but fans probably wouldn't mark an entire series as "watched" unless they liked it at least a little.
+
+```{r}
+user_ratings <- user_ratings |>
+  filter(rating > -1)
+
+#854k ratings left
+count(user_ratings)
+
+```
+
+Join the user ratings matrix with the anime name based on anime ID:
+
+```{r}
+
+#remove weird text from item info first
+item_info$name <- gsub("&quot;", "", item_info$name)
+item_info$name <- gsub("amp;", "", item_info$name)
+
+#join
+user_item <- left_join(user_ratings, item_info |>
+                         select(anime_id, name), by = "anime_id")
+
+#remove the anime ID
+user_item <- user_item |>
+  select(user_id, rating, name)
+
+```
+
+More exploratory analysis to see how many ratings users have.
+
+```{r}
+anime_table <- pivot_wider(
+  data = user_item,
+  names_from = name,
+  values_from = rating
+) 
+
+rating_counts <- rowSums(!is.na(anime_table |> select(-user_id)))
+
+table(rating_counts)
+
+rating_counts_2 <- as.tibble(rating_counts)
+
+
+#histogram of ratings
+rating_counts_2 |> ggplot(aes(x = value)) +
+  geom_histogram(bins = 60) +
+  labs(title = "Number of Ratings by User", x = "number of ratings") +
+  theme_minimal()
+
+#one user has 2429 ratings 
+max(rating_counts)
+
+#some users only have 1
+min(rating_counts)
+
+#avg user rated 89 shows/movies
+mean(rating_counts)
+```
+
+Pivot wider and make a user-item matrix:
+
+```{r}
+
+anime_matrix <- pivot_wider(
+  data = user_item,
+  names_from = name,
+  values_from = rating
+) |>
+  #make user_id the row name
+  column_to_rownames("user_id") |> 
+  as.matrix()   
+
+#check dimensions
+dim(anime_matrix)
+
+
+#create real ratings matrix
+real_anime_matrix <- as(anime_matrix, "realRatingMatrix")
+
+```
+
+I will exclude users with fewer than 15 ratings, which seems reasonable given the range of ratings in this data set:
+
+```{r}
+
+#min 15 ratings
+real_anime_matrix20 <- real_anime_matrix[rowCounts(
+  real_anime_matrix) > 15, ]
+
+```
+
+### Creating an item matrix
+
+Here, I turn the genre information about each anime into an item matrix. I do this by breaking the genre column up, getting rid of weird characters that cause matching issues, and pivoting wider. The item matrix will allow me to create a content-based collaborative filtering system.
+
+```{r}
+
+anime_rows <- separate_longer_delim(item_info, cols = genre, delim = ",")
+
+anime_rows <- anime_rows |> select(name, genre, type)
+
+#clean it up
+anime_rows$name <- gsub("amp;", "", anime_rows$name)
+
+
+item_features <- anime_rows |>
+  distinct(name, genre) |>
+  mutate(genre_val = 1) |>
+  pivot_wider(names_from = genre, values_from = genre_val,
+              values_fill = 0, values_fn = max) |>
+  column_to_rownames("name")
+```
+
+### Creating a recommender: content-based collaborative filtering
+
+Test to find common items  - I chose to identify anime by title, not ID, which can get messy when matching two matrices. With this many entries, weird characters are likely to import. Here, I make sure everything that's in the user matrix is in the item matrix.
+
+```{r}
+common_items <- intersect(rownames(item_features),
+                          colnames(real_anime_matrix20))
+
+item_features_aligned <- item_features[common_items, ]
+
+rating_matrix_aligned <- real_anime_matrix20[, common_items]
+
+#check to make sure no items were left out because of weird punctuation
+missing <- setdiff(colnames(real_anime_matrix20), rownames(item_features))
+
+missing2 <- setdiff(rownames(item_features), colnames(real_anime_matrix20))
+
+length(missing)
+length(missing2)
+```
+
+There are no items that have been rated by users that aren't in the item matrix, but there are items that have not been rated by users. This makes sense - I am only using a portion of the original data set.
+
+Calculate cosine similarity between items (this takes a long time):
+
+```{r}
+library(proxy)
+# compute cosine similarity and create item_sim matrix (faster than simil)
+mat <- as.matrix(item_features_aligned)
+norm <- sqrt(rowSums(mat^2))
+mat_norm <- mat / (norm + 1e-9)
+item_sim <- mat_norm %*% t(mat_norm)
+```
+
+Predict scores:
+
+```{r}
+cbf_predict <- function(user_ratings, item_sim, n = 10) {
+  rated_idx <- which(!is.na(user_ratings))
+  unrated_idx <- which(is.na(user_ratings))
+  
+  scores <- sapply(unrated_idx, function(i) {
+    sims <- item_sim[i, rated_idx]
+    rats <- user_ratings[rated_idx]
+    sum(sims * rats) / (sum(abs(sims)) + 1e-9)
+  })
+  
+  names(scores) <- names(user_ratings)[unrated_idx]
+  sort(scores, decreasing = TRUE)[1:n]
+}
+```
+
+Evaluate (I had to adjust the number of times this runs and take the user list down to 200 because the user list was too large):
+
+```{r}
+
+#loop over users
+set.seed(1122)
+rating_m <- as(rating_matrix_aligned, "matrix")
+n_users <- nrow(rating_m)
+test_users <- sample(1:n_users, 200)
+
+precision_list <- c()
+recall_list <- c()
+rmse_list <- c()
+
+for (i in test_users) {
+  user_ratings <- rating_m[i, ]
+  rated_idx <- which(!is.na(user_ratings))
+  if (length(rated_idx) < 5) next
+
+  test_idx <- sample(rated_idx, max(1, floor(0.2 * length(rated_idx))))
+  train_ratings <- user_ratings
+  train_ratings[test_idx] <- NA
+
+  preds <- cbf_predict(train_ratings, item_sim, n = 30)
+  pred_items <- names(preds)
+
+  relevant <- names(user_ratings[test_idx][user_ratings[test_idx] >= 6])
+  tp <- length(intersect(pred_items, relevant))
+  precision_list[i] <- tp / length(pred_items)
+  recall_list[i]    <- ifelse(length(relevant) > 0, tp / length(relevant), NA)
+
+  common <- intersect(pred_items, names(user_ratings[test_idx]))
+  if (length(common) > 0) {
+    actual <- user_ratings[test_idx][common]
+    predicted <- preds[common]
+    rmse_list[i] <- sqrt(mean((actual - predicted)^2))
+  }
+}
+
+#calculate metrics
+cat("Precision@30:", mean(precision_list, na.rm = TRUE), "\n")
+cat("Recall@30:   ", mean(recall_list, na.rm = TRUE), "\n")
+cat("RMSE:        ", mean(rmse_list, na.rm = TRUE), "\n")
+```
+
+The precision and recall aren't great, possibly due to the small sample size of users. RMSE is under 1, which is pretty good.
+
+### Creating a recommender - UBCF
+
+UBCF using default settings.
+
+```{r}
+set.seed(1122)
+scheme <- evaluationScheme(real_anime_matrix20, 
+                           method = "split", 
+                           train = 0.8, 
+                           #giving the model access to 15 ratings because 
+                           #the minimum total is 20
+                           given = 15, 
+                           #ratings are on a 1-10 scale
+                           goodRating = 6)
+
+#create recommender
+rec1 <- Recommender(getData(scheme, "train"), method = "UBCF")
+
+#predictions - let's see the recommendations for these 6 users
+
+pre <- predict(rec1, real_anime_matrix20[150:155], n = 5)
+pre
+as(pre, "list")
+
+
+#check the accuracy 
+results <- evaluate(scheme, method = "UBCF", type = "ratings")
+
+
+avg(results)
+
+
+results_2 <- evaluate(scheme, 
+                    method = "UBCF",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+avg(results_2)
+```
+
+UBCF takes a long time to run due to the size of the data set. The RMSE and MSE are kind of high (though this is a 1-10 scale instead of a 1-5), so the error is expected to be higher. Precision is pretty high; recall is low.
+
+In practice, it is a good idea to optimize the neighborhood size, but in this case, I will keep the default settings because the algorithm already takes a long time to run and the purpose of this project is to see how adding other elements, like diversity, affect accuracy.
+
+## SVD
+
+```{r}
+set.seed(1122)
+results_3 <- evaluate(scheme, method = "SVD", type = "ratings")
+
+avg(results_3)
+
+results_4 <- evaluate(scheme, 
+                    method = "SVD",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+#check the results
+avg(results_4)
+```
+
+RMSE, etc. are actually better than UBCF, but precision and recall are much worse. Let's find a better k, if possible:
+
+```{r}
+k_to_test <- c(5, 10, 20, 30, 40, 50)
+
+set.seed(1122)
+results_by_k <- lapply(k_to_test, function(k) {
+  evaluate(scheme,
+           method = "SVD",
+           type   = "topNList",
+           n      = c(5, 10, 20, 30, 40),
+           parameter = list(k = k))
+})
+
+# check results
+avg(results_by_k[[1]])
+
+# Precision data frame
+prec_df_svd <- do.call(rbind, lapply(seq_along(k_to_test), function(i) {
+  a <- avg(results_by_k[[i]])
+  data.frame(k         = k_to_test[i],
+             n         = a[, "n"],
+             precision = a[, "precision"])
+}))
+
+ggplot(prec_df_svd, aes(x = n, y = precision, color = factor(k), group = factor(k))) +
+  geom_line() + geom_point() +
+  labs(title = "SVD Precision by Dimensionality (k) and Number of Suggestions",
+       x = "Number of Suggestions", y = "Precision",
+       color = "Dimensionality (k)") +
+  theme_minimal()
+
+# TPR data frame
+tpr_df_svd <- do.call(rbind, lapply(seq_along(k_to_test), function(i) {
+  a <- avg(results_by_k[[i]])
+  data.frame(k   = k_to_test[i],
+             n   = a[, "n"],
+             TPR = a[, "TPR"])
+}))
+
+ggplot(tpr_df_svd, aes(x = n, y = TPR, color = factor(k), group = factor(k))) +
+  geom_line() + geom_point() +
+  labs(title = "SVD TPR (recall) by Dimensionality (k) and Number of Suggestions",
+       x = "Number of Suggestions", y = "TPR (recall)",
+       color = "Dimensionality (k)") +
+  theme_minimal()
+```
+
+Increasing dimensionality does not result in dramatic improvement. Some of these numbers are very similar, which is why they're not showing up in the graph (overlap). For TPR, 40 and 50 have the same trajectory, 5 and 10 are similar. 50 dimensions does the best overall, but the next-best is 30, which is close, and takes less long to run.
+
+Tested to see if this was a cold start problem - I tried this with a larger given (35) separately, and it didn't result in much improvement.
+
+```{r}
+set.seed(1122)
+results_5 <- evaluate(scheme, method = "SVD", type = "ratings", 
+                    parameter = list(k = 30))
+
+avg(results_5)
+
+results_6 <- evaluate(scheme, 
+                    method = "SVD",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40), 
+                    parameter = list(k = 30))
+                                     
+
+#check the results
+avg(results_6)
+```
+
+## Popular: establishing a baseline
+
+```{r}
+results_p <- evaluate(scheme, method = "POPULAR", type = "ratings")
+
+avg(results_p)
+
+
+results_p2 <- evaluate(scheme, 
+                    method = "POPULAR",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+avg(results_p2)
+
+#what are the recommendations?
+
+rec3 <- Recommender(getData(scheme, "train"), method = "POPULAR")
+
+# recommendations for the same 6 users
+
+pre3 <- predict(rec3, real_anime_matrix20[150:155], n = 5)
+
+as(pre3, "list")
+```
+
+The lists are similar for these users, excluding shows or movies they've already seen. The RMSE Is pretty comparable to UBCF, and precision/recall are better.
+
+## Random: establishing a floor
+
+```{r}
+rec4 <- Recommender(getData(scheme, "train"), method = "RANDOM")
+
+results_r <- evaluate(scheme, method = "RANDOM", type = "ratings")
+
+avg(results_r)
+
+
+results_r2 <- evaluate(scheme, 
+                    method = "RANDOM",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+avg(results_r2)
+
+#not displaying the recs for 6 users because they won't tell us anything
+```
+
+RMSE is really high at \~3.8 (higher than everything else), precision and recall are better than SVD, which is concerning for SVD.
+
+## Comparing results
+
+Looking at UBCF, SVD, popular, and Random for the first comparison. I will add CBF's more limited metrics after.
+
+```{r}
+combined_df <- bind_rows(
+  extract_avg(results_2,       "UBCF"),   
+  extract_avg(results_6,               "SVD (k=30)"),
+    extract_avg(results_p2,              "Popular"),
+  extract_avg(results_r2,              "Random")
+)
+
+combined_df
+
+#Comparison at 30 rec's
+
+combined_df |>
+  filter(n == 30) |>
+  select(Method, precision, recall, TPR, FPR) |>
+  knitr::kable(digits = 4, caption = "Comparison at 30 Recommendations")
+
+#bar chart
+combined_df |>
+  filter(n == 30) |>
+  select(Method, precision, recall) |>
+  pivot_longer(c(precision, recall), names_to = "Metric", values_to = "Value") |>
+  ggplot(aes(x = Method, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  labs(title = "Precision & Recall at N=30", x = NULL, y = NULL) +
+  theme_minimal()
+
+```
+
+SVD is so low it doesn't even show up on the bar chart. UBCF does significantly better than random, but popular is still a high baseline.
+
+```{r}
+#Precision
+
+ggplot(combined_df, aes(x = n, y = precision, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Precision by Method",
+       x = "Number of Recommendations", y = "Precision") +
+  theme_minimal()
+
+#Reall/true positive rate
+
+ggplot(combined_df, aes(x = n, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point() +
+  labs(title = "Recall (TPR) by Method",
+       x = "Number of Recommendations", y = "Recall (TPR)") +
+  theme_minimal()
+
+#ROC curve
+
+ggplot(combined_df, aes(x = FPR, y = TPR, color = Method)) +
+  geom_line(linewidth = 1) + geom_point(shape = 3) +
+  labs(title = "ROC Curve by Method",
+       x = "FPR", y = "TPR") +
+  theme_minimal()
+
+
+```
+
+Based on the ROC curve, SVD does worse than random, possibly because the data set is so sparse, and there are only a few false positives and true positives overall (this may just be margin of error). With a large rating scale, 1-10, SVD may also struggle to normalize.
+
+Popular does better in every case, but UBCF improves with more recommendations and is better than random.
+
+Adding in collaborative filtering (there's only one k, 30, for this model):
+
+```{r}
+cbf_row <- data.frame(
+  Method = "CBF",
+  n = 30,
+  precision = mean(precision_list, na.rm = TRUE),
+  recall = mean(recall_list, na.rm = TRUE)
+)
+
+combined_df2 <- bind_rows(
+  extract_avg(results_2,  "UBCF"),
+  extract_avg(results_6,  "SVD (k=30)"),
+  extract_avg(results_p2, "Popular"),
+  extract_avg(results_r2, "Random")
+        ) |>
+  filter(n == 30) |>
+  select(Method, n, precision, recall) |>
+  bind_rows(cbf_row)
+
+#bar chart
+
+combined_df2 |>
+  filter(n == 30) |>
+  select(Method, precision, recall) |>
+  mutate(Method = reorder(Method, -precision)) |>
+  pivot_longer(c(precision, recall), names_to = "Metric", values_to = "Value") |>
+  ggplot(aes(x = Method, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  labs(title = "Precision & Recall at 30 Suggestions", x = NULL, y = NULL) +
+  theme_minimal()
+
+
+```
+
+CBF's precision and recall were worse than everything but SVD. However, that's not true for RMSE:
+
+```{r}
+rmse_df <- data.frame(
+  Algorithm = c("UBCF", "SVD", "Popular", "Random", "CBF"),
+  RMSE = c(
+    avg(results)[,"RMSE"],
+    avg(results_5)[,"RMSE"],
+    avg(results_p)[,"RMSE"],
+    avg(results_r)[,"RMSE"],
+    mean(rmse_list, na.rm = TRUE)
+  )
+)
+
+rmse_df
+
+
+rmse_df |> arrange(desc(RMSE)) |>
+  ggplot(aes(x = reorder(Algorithm, -RMSE), y = RMSE, fill = Algorithm)) +
+  geom_col() + 
+  labs(title = "Algorithm by RMSE (at 30 Recommendations)",
+       x = "Algorithm") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+CF has the lowest RMSE. Precision and recall might not be great, but the model is able to predict scores pretty accurately. SVD and popular (popular items score well) are close, while UBCF is slightly worse, and random is very high.
+
+### Adding recommendation diversity
+
+I'll add recommendation diversity in two ways . First, I'm adding a random element to the UBCF recommender (20% random), which should give the results variety but make the metrics slightly worse. I'm using a smaller set of 800 users, since the hybrid recommender took a long time to run (20+ minutes).
+
+```{r}
+# sample 800 users
+set.seed(1122)
+user_sample <- sample(1:nrow(real_anime_matrix20), 800)
+small_matrix <- real_anime_matrix20[user_sample, ]
+
+# train/test split on 800 users
+scheme_small <- evaluationScheme(small_matrix,
+                                 method = "split",
+                                 train = 0.8,
+                                 given = 15,
+                                 goodRating = 6)
+
+test_data    <- getData(scheme_small, "known")
+test_unknown <- getData(scheme_small, "unknown")
+
+#retrain models on small scheme
+rec1_s <- Recommender(getData(scheme_small,
+                              "train"), 
+                      method = "UBCF")
+
+
+rec4_s <- Recommender(getData(scheme_small,
+                              "train"),
+                      method = "RANDOM")
+
+#adding 20% random suggestions for diversity
+diversity <- HybridRecommender(
+  rec1_s, #UBCF
+  rec4_s, #random
+  weights = c(0.8, 0.2)
+)
+preds_div <- predict(diversity, test_data, type = "ratings")
+
+#check accuracy (RMSE MAE MSE)
+acc <- calcPredictionAccuracy(preds_div, test_unknown)
+
+acc
+
+preds_topn <- predict(diversity, 
+                      test_data,
+                      type = "topNList",
+                      n = 30)
+
+
+#check true positives, etc.
+acc_topn <- calcPredictionAccuracy(preds_topn,
+                                   test_unknown,
+                                   given = 15,
+                                   goodRating = 6)
+
+acc_topn
+
+```
+
+Adding random recommendations made precision, recall, and RMSE a lot worse, predictably (this may also have to do with the smaller user set, but I was able to run this once on the original data set and the result was the same).
+
+Another way to add diversity is to include popular recommendations: items with broad appeal will be interspersed with more personalized recommendations. This makes sense for anime more than, for example, books, since the medium itself is already an interest.
+
+```{r}
+#adding 30% popular suggestions for diversity
+diversity2 <- HybridRecommender(
+  rec1_s, #UBCF
+  rec3_s, #popular
+  weights = c(0.7, 0.3))
+  
+
+#retrain popular model on small data set
+rec3_s <- Recommender(getData(scheme_small,
+                              "train"),
+                      method = "POPULAR")
+
+#predict
+preds_div2 <- predict(diversity2,
+                      test_data,
+                      type = "ratings")
+
+
+#check accuracy (RMSE, etc.)
+acc2 <- calcPredictionAccuracy(preds_div2,
+                               test_unknown)
+
+acc2
+
+preds_topn2 <- predict(diversity2, 
+                       test_data, type = "topNList",
+                       n = 30)
+
+acc_topn2 <- calcPredictionAccuracy(preds_topn2,
+                                    test_unknown,
+                                    given = 15,
+                                    goodRating = 6)
+acc_topn2
+```
+
+The RMSE came down a bit, and it's a bit closer to popular and SVD. Precision and recall both went down as well .
+
+### Combining CBF with diversity. 
+
+This uses Maximal Marginal Relevance, which re-ranks predictions based on similarity to items it already predicted. It picks the top n (30) items, but one by one, balancing the list based on similarity to previously selected itmes. A lambda of .7 means 70% relevance, 30% avoiding redundant/similar choices.
+
+```{r}
+# use cosine similarity previously calculated (no need to calculate it again)
+
+cbf_predict_mmr <- function(user_ratings, item_sim, n = 30, lambda = 0.7) {
+  rated_idx <- which(!is.na(user_ratings))
+  unrated_idx <- which(is.na(user_ratings))
+  
+  #base relevance scores
+  scores <- sapply(unrated_idx, function(i) {
+    sims <- item_sim[i, rated_idx]
+    rats <- user_ratings[rated_idx]
+    sum(sims * rats) / (sum(abs(sims)) + 1e-9)
+  })
+  
+  #MMR reranking
+  n_candidates <- length(unrated_idx)
+  selected_pos <- c()
+  remaining <- seq_len(n_candidates)
+  
+  for (k in 1:n) {
+    if (length(selected_pos) == 0) {
+      best_pos <- which.max(scores[remaining])
+    } else {
+      redundancy <- apply(item_sim[unrated_idx[remaining], unrated_idx[selected_pos], drop = FALSE], 1, max)
+      mmr <- lambda * scores[remaining] - (1 - lambda) * redundancy
+      best_pos <- which.max(mmr)
+    }
+    selected_pos <- c(selected_pos, remaining[best_pos])
+    remaining <- remaining[-best_pos]
+  }
+  
+  result <- scores[selected_pos]
+  names(result) <- names(user_ratings)[unrated_idx[selected_pos]]
+  result
+}
+
+
+set.seed(1122)
+test_users <- sample(1:n_users, 200)
+precision_list_cd <- c()
+recall_list_cd <- c()
+rmse_list_cd <- c()
+
+for (i in test_users) {
+  user_ratings <- rating_m[i, ]
+  rated_idx <- which(!is.na(user_ratings))
+  if (length(rated_idx) < 5) next
+  test_idx <- sample(rated_idx, max(1, floor(0.2 * length(rated_idx))))
+  train_ratings <- user_ratings
+  train_ratings[test_idx] <- NA
+  preds <- cbf_predict_mmr(train_ratings, item_sim, n = 30, lambda = 0.7)
+  pred_items <- names(preds)
+  relevant <- names(user_ratings[test_idx][user_ratings[test_idx] >= 6])
+  tp <- length(intersect(pred_items, relevant))
+  precision_list_cd[i] <- tp / length(pred_items)
+  recall_list_cd[i]    <- ifelse(length(relevant) > 0, tp / length(relevant), NA)
+  common <- intersect(pred_items, names(user_ratings[test_idx]))
+  if (length(common) > 0) {
+    actual <- user_ratings[test_idx][common]
+    predicted <- preds[common]
+    rmse_list_cd[i] <- sqrt(mean((actual - predicted)^2))
+  }
+}
+
+cat("Precision@30:", mean(precision_list_cd, na.rm = TRUE), "\n")
+cat("Recall@30:   ", mean(recall_list_cd, na.rm = TRUE), "\n")
+cat("RMSE:        ", mean(rmse_list_cd, na.rm = TRUE), "\n")
+```
+
+RMSE is lower than anything so far. Precision and recall are slightly better than the original model.
+
+### Comparing results with novelty and diversity
+
+```{r}
+rmse_df_hybrid <- data.frame(
+  Algorithm = c("UBCF", "SVD", "Popular", "Random", 
+                "CBF", "UBCF-Random", 
+                "UBCF-Popular", "CBF Diversity"),
+  RMSE = c(
+    avg(results)[,"RMSE"],
+    avg(results_5)[,"RMSE"],
+    avg(results_p)[,"RMSE"],
+    avg(results_r)[,"RMSE"],
+    mean(rmse_list, na.rm = TRUE),
+    acc["RMSE"],
+    acc2["RMSE"],
+    mean(rmse_list_cd, na.rm = TRUE)
+  )
+)
+
+rmse_df_hybrid
+
+
+rmse_df_hybrid |> arrange(desc(RMSE)) |>
+  ggplot(aes(x = reorder(Algorithm, -RMSE), y = RMSE, fill = Algorithm)) +
+  geom_col() + 
+  labs(title = "Algorithm by RMSE (at 30 Recommendations)",
+       x = "Algorithm") +
+  theme_minimal() + 
+  theme(legend.position = "none")
+```
+
+```{r}
+cbf_row2 <- data.frame(
+  Method = "CBF Diversity",
+  n = 30,
+  precision = mean(precision_list_cd, na.rm = TRUE),
+  recall = mean(recall_list_cd, na.rm = TRUE)
+)
+
+#add cbf and make data frames that can be added to the table
+
+hybrid1_row <- data.frame(
+  Method    = "UBCF-Random",
+  n         = 30,
+  precision = acc_topn["precision"],
+  recall    = acc_topn["recall"]
+)
+
+hybrid2_row <- data.frame(
+  Method    = "UBCF-Popular",
+  n         = 30,
+  precision = acc_topn2["precision"],
+  recall    = acc_topn2["recall"]
+)
+
+combined_df3 <- combined_df2 |>
+  bind_rows(hybrid1_row, hybrid2_row) |>
+  select(Method, n, precision, recall) |>
+  bind_rows(cbf_row2)
+
+combined_df3
+
+#bar chart
+
+combined_df3 |>
+  filter(n == 30) |>
+  select(Method, precision, recall) |>
+  mutate(Method = reorder(Method, -precision)) |>
+  pivot_longer(c(precision, recall), names_to = "Metric", values_to = "Value") |>
+  ggplot(aes(x = Method, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  labs(title = "Precision & Recall at 30 Suggestions", x = NULL, y = NULL) +
+  theme_minimal()
+
+```
+
+## Conclusion
+
+Combining UBCF with popular resulted in a lower RMSE, even with a smaller data set. CBF with some diversity had the lowest RMSE of all; it also incorporates a more sophisticated model than mixing UBCF with random or popular. As predicted, adding random recommendations to the UBCF algorithm made the RMSE worse. Having a bunch of random suggestions thrown in probably does not improve the user experience for most people. Recommending popular items, while it improves numbers in testing, might not add a lot of value for many users, since they likely already know about these items. It's almost like giving the model a cheat sheet of what most users have watched. In terms of precision and recall, all the hybrid models did worse than the originals, which was expected: They were all intentionally picking less on-target recommendations.
+
+For a hybrid recommender, I would pick CBF-diversity. It takes user preferences and builds in different genre recommendations based on their interests. That seems like a better experience than being recommended all Gundam anime because that's a large percentage of what a user watched or what they generally rated better.
+
+### UX tests
+
+Some possible UX experiments:
+
+Whether providing reasoning for the recommendation could be helpful, e.g., "Because you watched x, you might enjoy y." This could be evaluated using a/b testing, where some users see recommendations + reasoning, while others just see recommendations without context. Are the users who see the reasoning behind their recommendations more likely to click through?
+
+Provide an option to choose favorite shows, so recommendations can be more aligned with those (Letterboxd does a version of this). To evaluate how well this works, keep 50% of recommendations aligned with favorite shows, 50% algined with other user preferences, and see which users engage with more. Or, pilot on only on a portion of users and evaluate.
+
+Sometimes, people are in the mood for a certain type of show. There could be an interactive element, like asking the user, "what do you feel like watching?" Then, they choose a genre and other specifiers, like whether it's a movie or series, or how long it is. Then, evaluate whether those recommendations that incorporate additional specifications were more successful than passive ones.
+
+I added popular recommendations to UBCF, but this doesn't help users stay on top of what's trending. Those recommendations are all-time, not what's popular this week, month, etc. This could be implemented via a new/everyone's watching feature (novelty + popularity) for the week or month, perhaps on the home page or alongside personalized recommendations, and testing how much users clicked on those or started watching compared to their personalized recommendations.
+
+Considering engagement outside of ratings: Measuring whether the user clicked and visited the page for the show, whether they engaged partially (e.g., watched a few episodes and then stopped), or whether they added the show to their watch list. This gives clues as to what the user is interested in, and could be seen as a successful recommendation. Series take a long time to watch, and they may come back to a recommendation later.
+
+### Sources
+
+Claude Sonnet, 4.6. [Large language model] Accessed June 2026. Claude.ai (for the CBF model and help putting the item matrix together)
