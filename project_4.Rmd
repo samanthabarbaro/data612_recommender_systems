@@ -848,4 +848,4 @@ Considering engagement outside of ratings: Measuring whether the user clicked an
 
 ### Sources
 
-Claude Sonnet, 4.6. [Large language model] Accessed June 2026. Claude.ai (for the CBF model and help putting the item matrix together)
+Claude Sonnet, 4.6. [Large language model] Accessed June 2026. Claude.ai
