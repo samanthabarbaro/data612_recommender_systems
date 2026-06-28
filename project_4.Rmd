@@ -440,6 +440,13 @@ RMSE is really high at \~3.8 (higher than everything else), precision and recall
 Looking at UBCF, SVD, popular, and Random for the first comparison. I will add CBF's more limited metrics after.
 
 ```{r}
+
+extract_avg <- function(result, method_name) {
+  as.data.frame(avg(result)) |>
+    mutate(Method = method_name)
+}
+
+
 combined_df <- bind_rows(
   extract_avg(results_2,       "UBCF"),   
   extract_avg(results_6,               "SVD (k=30)"),
@@ -629,6 +636,11 @@ Adding random recommendations made precision, recall, and RMSE a lot worse, pred
 Another way to add diversity is to include popular recommendations: items with broad appeal will be interspersed with more personalized recommendations. This makes sense for anime more than, for example, books, since the medium itself is already an interest.
 
 ```{r}
+#retrain popular model on small data set
+rec3_s <- Recommender(getData(scheme_small,
+                              "train"),
+                      method = "POPULAR")
+
 #adding 30% popular suggestions for diversity
 diversity2 <- HybridRecommender(
   rec1_s, #UBCF
@@ -636,10 +648,7 @@ diversity2 <- HybridRecommender(
   weights = c(0.7, 0.3))
   
 
-#retrain popular model on small data set
-rec3_s <- Recommender(getData(scheme_small,
-                              "train"),
-                      method = "POPULAR")
+
 
 #predict
 preds_div2 <- predict(diversity2,
