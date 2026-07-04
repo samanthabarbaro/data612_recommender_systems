@@ -609,7 +609,7 @@ So, at this scale, Spark is not necessarily worth it. Also noting that I could h
 
 ### When does Spark become necessary?
 
-This comparison is run with a sample of 200 users. 200 is not Spark's limit on this node (I tested and ran the process successfully with 1000 users, and could have easily done more). It does not make sense to use Spark for a small data set due to the upfront costs and overall amount of time. This data set is too small to utilize Spark's efficiencies, like lazy evaluation.
+This comparison is run with a sample of 200 users. 200 is not Spark's limit on this node (I tested and ran the process successfully with 1000 users, and could have easily done more). It does not make sense to use Spark for a small data set due to the upfront costs and overall amount of time. This data set is too small to benefit from Spark's efficiencies, like lazy evaluation.
 
 However, the upfront cost to using Spark makes sense with larger data sets and more users, such as the full data set (downloadable [on Kaggle](https://www.kaggle.com/datasets/CooperUnion/anime-recommendations-database), contains data from 73,516 users on 12,294 anime). To process the entire data set of \~74k users, Spark and extra computing power would absolutely be necessary. Essentially, implementing anything sophisticated and actually usable on a site with this many users requires a more efficient way to compute and update recommendations. Recommendations would have to be updated regularly for many users, as would items, which requires a more efficient system
 
