@@ -1,0 +1,121 @@
+---
+title: "Final project planning document"
+author: "Sam Barbaro"
+date: "2026-07-05"
+output: html_document
+---
+
+## Final Project Planning Document
+
+I will use this Beer Advocate data set from Kaggle, with 1.5 million ratings. It's located here:
+
+<https://www.kaggle.com/datasets/thedevastator/1-5-million-beer-reviews-from-beer-advocate/data>
+
+### Part 1
+
+My beer purchases are typically based upon the name of the product and whether it purports to be cake-flavored (the second thing is almost always a lie, but hope springs eternal). Because you don't really know much about a drink when you're buying it (it's not like a book where you can read the first few pages or a movie where you can watch the trailer or read a description), purchases are made based on limited information. For these reasons, I would like to take the Beer Advocate data set, implement ALS, and optimize it. I want to predict whether someone would be interested in trying a beer. I also want to try deploying the same code in Azure, to see if using the dedicated RAM speeds up the process and creates efficiencies. For example, below, I would have had a dataframe/matrix that was 56k rows wide, and I had to pare down by deleting beers that had ten or fewer ratings. The entire data set may be easier to run in Azure.
+
+**The steps:**
+
+- Clean the data
+
+- Explore the data (how many ratings are there? What is the average rating? Which beers are the most-rated? What is the average number of ratings? Is there a most popular type of beer? Are there products with only one or two ratings?)
+
+- Create a binary matrix
+
+- Implement ALS
+
+- Optimize parameters, including lambda, n_factors, and n_iterations
+
+- Implement ALS again
+
+- Visualize results
+
+- Run optimized ALS in Azure and document results/times
+
+### Part 2: incorporating images
+
+If there's time, I will attempt this in a more limited capacity than part 1.
+
+I believe labels are a big factor in drink purchases, especially with beer, where costs are roughly similar across the board. However, unlike movie posters, it's hard to find images for every beer: some of these products may no longer exist, Beer Advocate uses a placeholder image for many products, and photos are not in a centralized place, like IMDB. I may pull a subset of the most popular beers' images and attempt to incorporate image processing into collaborative filtering to see if features like color or shape play a role in beer choices. This will be tested locally and will involve a subset of the data.
+
+### Preliminary data cleaning
+
+Below, there's some code making sure I can transform this file (which has about 56k products) into wide format.
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(recommenderlab)
+
+beer_ratings <- read.csv(
+  "C:/Users/Sam Barbaro/Desktop/Data 612/beer_reviews.csv", 
+  na.strings = c("", "NA", "null", "NULL"),  header = TRUE)
+
+```
+
+Select relevant columns
+
+```{r}
+beer_users <- beer_ratings |>
+  select(review_profilename, beer_name, review_overall)
+
+#1.6 million-ish rows 
+count(beer_users)
+
+#how wide will this matrix be?
+distinct_beers <- beer_users |> distinct(beer_name
+                                        )
+
+distinct_users <- beer_users |> distinct(review_profilename
+                                        )
+
+
+```
+
+There are 56k beers, meaning the matrix will be 56,857 rows wide. There are 33,388 users. It's possible there are some beers that have only been reviewed a few times.
+
+```{r}
+#how many beers have fewer than 5 reviews? 
+
+beer_counts <- beer_users |>
+    group_by(beer_name) |>
+    summarise(n_reviews = n()) |>
+    arrange((n_reviews))
+
+beer_less_than5 <- beer_counts |>
+  filter(n_reviews < 11)
+
+#about 38k beers have fewer than 5 reviews
+count(beer_less_than5)
+
+```
+
+I was unable to make a grid that was 56k wide, so I will eliminate beers with 10 or fewer reviews.
+
+```{r}
+beer_userids <- beer_users |>
+  mutate(user_id = as.integer(factor(review_profilename))) |>
+  select(user_id, beer_name, review_overall)
+
+#anti-join (this should  happen before the previous step in 
+#the final version)
+
+beer_reduced <- anti_join(beer_userids, beer_less_than5, by = "beer_name")
+
+
+```
+
+Create the wide table before converting to a real ratings matrix
+
+```{r}
+beer_wide <- pivot_wider(
+  data = beer_reduced,
+  id_cols = user_id,
+  names_from = beer_name,
+  values_from = review_overall,
+  #in case users reviewed a beer more than once (reviewers can)
+  values_fn = first 
+)
+
+beer_wide <- beer_wide |> arrange(user_id)
+```
