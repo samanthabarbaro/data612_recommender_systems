@@ -1,0 +1,272 @@
+---
+title: "Project 6"
+author: "Sam Barbaro"
+date: "2026-07-06"
+output: html_document
+---
+
+## Running recommenderlab on Azure
+
+*Persistent Storage: Use a long-term storage solution. This can be either a database\
+service such as Azure SQL Database, Cosmos DB, or file/blob storage using Azure\
+Blob Storage.*
+
+I used Azure blob storage to store my anime ratings and anime csv files. This was the easiest solution for directly reading a .csv into R.
+
+![](images/clipboard-2344105951.png)
+
+## Setting up a virtual machine
+
+*Compute Resource: Use a compute service. This could be a virtual machine via Azure\
+Virtual Machines, a containerized solution via Azure Container Instances or Azure\
+Kubernetes Service (AKS), or a serverless function using Azure Functions.*
+
+First, I set up a virtual machine, but there were no free storage options. I looked for B1/B2 storage options, but they were unavailable. Copilot told me that they were unavailable in my region, Eastern US, but also that they were available in my region, Eastern US. I eventually figured out that meant that they were currently fully in use (not region locked). I changed my region to Australia (after trying several other regions) and was able to use B2. However, this only offered 1 GB of memory.
+
+![](images/clipboard-3103707915.png)
+
+### Network security
+
+*Network Security: Use an Azure Virtual Network (VNet) and configure Network\
+Security Groups (NSGs) or private endpoints to ensure that only authorized users or\
+applications can access your deployed resources.*
+
+I ran the virtual machine in PowerShell and used my SSH network key to connect (key not pictured). Here, I also set the NSG to only allow my IP address.
+
+![](images/clipboard-4280296763.png)
+
+Before configuring:
+
+![](images/clipboard-259213366.png)
+
+After configuring my IP address:
+
+![](images/clipboard-191325434.png)
+
+After connecting with my network key:
+
+![](images/clipboard-2283314452.png)
+
+### Run code
+
+I installed packages: recommenderlab was not available, so I updated the version of R I was using so it could be installed.
+
+![](images/clipboard-1908728937.png)
+
+Then the VM crashed multiple times: it stopped installing R packages and wouldn't let me quit. I realized this was because the only storage I was able to get was 1 GB of RAM. I went back into Azure and upgraded to 8 GB.
+
+This is all the code I ran (minus network security keys). I streamlined the code from project 4 so it just did what's required for this recommender. (Runtimes after the code).
+
+```{r}
+#ssh [user name]
+
+R
+
+library(AzureStor)
+
+cont <- storage_container(
+  "[Blob storage URL]",
+  key = "[network key]"
+)
+
+storage_download(cont, "animeratings.csv", "anime.csv")
+df <- read.csv("anime.csv")
+head(df)
+
+
+storage_download(cont, "animeratings.csv", "anime.csv", overwrite = TRUE)
+df <- read.csv("anime.csv")
+head(df)
+
+#get item info
+storage_download(cont, "anime.csv", "item_info.csv", overwrite = TRUE)
+item_info <- read.csv("item_info.csv")
+head(item_info)
+
+#ubuntu will download tidyverse but won't run it as a package
+#they have to be run individually
+library(dplyr)
+library(tidyr)
+library(recommenderlab)
+
+user_ratings <- df %>%
+  filter(rating > -1)
+
+
+#remove weird text from item info first
+item_info$name <- gsub("&quot;", "", item_info$name)
+item_info$name <- gsub("amp;", "", item_info$name)
+
+#create other table
+
+#join
+user_item <- left_join(user_ratings, item_info |>
+                         select(anime_id, name), by = "anime_id")
+
+#remove the anime ID
+user_item <- user_item |>
+  select(user_id, rating, name)
+
+#pivot wider
+anime_table <- pivot_wider(
+  data = user_item,
+  names_from = name,
+  values_from = rating
+) 
+
+library(tibble)
+
+#create matrix
+
+anime_matrix <- pivot_wider(
+  data = user_item,
+  names_from = name,
+  values_from = rating
+) |>
+  column_to_rownames("user_id") |> 
+  as.matrix()   
+
+
+#create real ratings matrix
+real_anime_matrix <- as(anime_matrix, "realRatingMatrix")
+
+#min 15 ratings
+real_anime_matrix20 <- real_anime_matrix[rowCounts(
+  real_anime_matrix) > 15, ]
+
+
+
+```
+
+```{r}
+set.seed(1122)
+scheme <- evaluationScheme(real_anime_matrix20, 
+                           method = "split", 
+                           train = 0.8, 
+                           #giving the model access to 15 ratings
+                           #most users will have a few more than this
+                           given = 15, 
+                           #ratings are on a 1-10 scale
+                           goodRating = 6)
+
+
+set.seed(1122)
+results_3 <- evaluate(scheme, method = "SVD", type = "ratings")
+
+avg(results_3)
+
+results_4 <- evaluate(scheme, 
+                    method = "SVD",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+#check the results
+avg(results_4)
+```
+
+I wasn't sure if Azure would run faster than my local machine, since they both have 8 GB of ram, but it did. The recommenders and runtimes:
+
+![](images/clipboard-2015983209.png)
+
+![](images/clipboard-2131840349.png)
+
+![](images/clipboard-3242978022.png)
+
+Runtime was about the same as the one I ran on my local machine. Azure took 3.97 seconds, and my local machine took 4.33. On the second algorithm, Azure took 4 seconds and my local machine also took about four seconds. My local machine:
+
+![](images/clipboard-2863710971.png)
+
+![](images/clipboard-3722202440.png)
+
+After this, I decided to check UBCF, a more computationally-intensive algorithm, to see if it ran any faster in azure. It only took 3 minutes as opposed to 318 seconds (about 5.25 mins) to run.
+
+```{r}
+
+#create recommender
+rec1 <- Recommender(getData(scheme, "train"), method = "UBCF")
+
+#predictions - let's see the recommendations for these 6 users
+
+pre <- predict(rec1, real_anime_matrix20[150:155], n = 5)
+pre
+as(pre, "list")
+
+
+#check the accuracy 
+results <- evaluate(scheme, method = "UBCF", type = "ratings")
+
+
+avg(results)
+
+
+results_2 <- evaluate(scheme, 
+                    method = "UBCF",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 30, 40))
+
+avg(results_2)
+```
+
+![](images/clipboard-1566365348.png)
+
+![](images/clipboard-2421747332.png)
+
+![](images/clipboard-119716996.png)
+
+![Local machine:](images/clipboard-1257267168.png)
+
+![](images/clipboard-3030930026.png)
+
+![](images/clipboard-1375495143.png)
+
+### Graph the comparison
+
+Here's a comparison of the results of the two recommenders with a graph created in and downloaded from Azure.
+
+```{r}
+
+#extract performance metrics
+metrics_svd  <- avg(results_4)  |>
+  as.data.frame() |> 
+  mutate(Method = "SVD",  N = c(5, 10, 20, 30, 40))
+
+metrics_ubcf <- avg(results_2) |>
+  as.data.frame() |>
+  mutate(Method = "UBCF", N = c(5, 10, 20, 30, 40))
+
+
+plot_data_line <- bind_rows(metrics_svd, metrics_ubcf) |>
+  select(Method, N, precision, recall) |>
+  pivot_longer(cols = c(precision, recall), names_to = 
+                 "Metric", values_to = "Value")
+
+#graph
+p_line <- ggplot(plot_data_line, aes(x = N, y = Value, color = Method, group = Method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~Metric, scales = "free_y") +
+  labs(
+    title = "Model Comparison: Precision and Recall @ N",
+    x = "Number of Recommendations (N)",
+    y = "Score",
+    color = "Algorithm"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1")
+
+# 4. Save the line graph to your VM
+ggsave("model_comparison_line.png", plot = p_line, width = 8, height = 5, dpi = 300)
+
+# 5. Upload it directly to your Azure storage container
+storage_upload(cont, "model_comparison_line.png", "model_comparison_line.png")
+```
+
+![](images/clipboard-1473220305.png)
+
+### Conclusion
+
+There was an upfront cost to using Azure, including figuring out the interface, setting up a virtual machine, and trying to get free computing solutions to work. Powershell is also less convenient to use than R Studio. I ended up configuring R twice and having to troubleshoot issues with computing after R crashed. I also had to save the exact code I needed to run in R studio and test it first because Powershell doesn't have the same user-friendly environment as R Studio. However, the amount of time saved on running a more intensive algorithm on a data set with almost a million ratings was significant. Based on this test, run with the entire data set, I can infer that for larger, deployable recommenders, cloud computing and dedicated RAM are necessary and helpful.
+
+### Sources
+
+Google Gemini, 3.5 Flash, [Large language model] Accessed July 2026. gemini.google.com
