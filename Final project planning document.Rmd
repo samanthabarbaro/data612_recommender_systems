@@ -13,7 +13,11 @@ I will use this Beer Advocate data set from Kaggle, with 1.5 million ratings. It
 
 ### Part 1
 
-My beer purchases are typically based upon the name of the product and whether it purports to be cake-flavored (the second thing is almost always a lie, but hope springs eternal). Because you don't really know much about a drink when you're buying it (it's not like a book where you can read the first few pages or a movie where you can watch the trailer or read a description), purchases are made based on limited information. For these reasons, I would like to take the Beer Advocate data set, implement ALS, and optimize it. I want to predict whether someone would be interested in trying a beer. I also want to try deploying the same code in Azure, to see if using the dedicated RAM speeds up the process and creates efficiencies. For example, below, I would have had a dataframe/matrix that was 56k rows wide, and I had to pare down by deleting beers that had ten or fewer ratings. The entire data set may be easier to run in Azure.
+My beer purchases are typically based upon the name of the product and whether it purports to be cake-flavored (the second thing is almost always a lie, but hope springs eternal). Because you don't really know much about a drink when you're buying it (it's not like a book where you can read the first few pages or a movie where you can watch the trailer or read a description), purchases are made based on limited information. For these reasons, I would like to take the Beer Advocate data set, implement ALS, and optimize it for precision\@k while also monitoring recall\@k. Precision, the total number of true positives out of all predicted positives, and recall, the proportion of relevant items correctly predicted, will be interesting with such a sparse data set (I suspect this data set is sparser than one of movies, TV shows, or songs).
+
+I want to predict whether someone would be interested in trying a beer. I also want to try deploying the same code in Azure, to see if using the dedicated RAM speeds up the process and creates efficiencies. For example, below, I would have had a dataframe/matrix that was 56k rows wide, and I had to pare down by deleting beers that had ten or fewer ratings. The entire data set may be easier to run in Azure.
+
+I will also discuss some possible real-world/UX implementations that could add value to this recommender, beyond the ability to predict drinks the user has already tried (e.g., implementing a "near you" feature, letting the user explore different types of products, or anything else that becomes apparent while analyzing this data set).
 
 **The steps:**
 
@@ -25,7 +29,7 @@ My beer purchases are typically based upon the name of the product and whether i
 
 - Implement ALS
 
-- Optimize parameters, including lambda, n_factors, and n_iterations
+- Optimize parameters, including lambda, n_factors, and n_iterations (using precision\@k)
 
 - Implement ALS again
 
