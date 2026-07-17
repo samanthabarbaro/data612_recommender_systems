@@ -1,0 +1,533 @@
+---
+title: "Final project planning document"
+author: "Sam Barbaro"
+date: "2026-07-05"
+output: html_document
+---
+
+## Final Project
+
+I'm using this Beer Advocate data set from Kaggle, with 1.5 million ratings, [located here](https://www.kaggle.com/datasets/thedevastator/1-5-million-beer-reviews-from-beer-advocate/data).
+
+### Methodology and outline
+
+Below, I take the Beer Advocate data set, implement ALS, and optimize it for precision\@k while also monitoring recall\@k. I look at precision, the total number of true positives out of all predicted positives, and recall, the proportion of relevant items correctly predicted, with a very sparse data set. My goal is to predict whether someone would be interested in purchasing a beer, not whether they will rate it highly, hence the ALS implementation. ALS is also great at handling data sets with lots of missing information, and this is a very sparse data set.
+
+I also deploy the same code in Azure. I had trouble processing ALS on a data set this large on my machine, so I wanted to see if using Azure's dedicated RAM sped up the process and created efficiencies.
+
+Finally, I discuss some possible real-world/UX implementations that could add value to this recommender, beyond the ability to predict drinks the user has already tried (e.g., implementing a "near you" feature or letting the user explore different types of products).
+
+### Data cleaning
+
+Here, I load the data, remove products with only a few reviews, remove users with only a few reviews (due to size constraints), transform the data, and turn th df into a binarized matrix.
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(recommenderlab)
+
+beer_ratings <- read.csv(
+  "C:/Users/Sam Barbaro/Desktop/Data 612/beer_reviews.csv", 
+  na.strings = c("", "NA", "null", "NULL"),  header = TRUE)
+
+```
+
+#### Select relevant columns
+
+Beer Advocate lets users rate many different aspects, like taste, palate, color, and aroma. For the purpose of this recommender, I only need to know whether someone tried an item. So, I selected reviewer name, beer name, and the overall score.
+
+```{r}
+beer_users <- beer_ratings |>
+  select(review_profilename, beer_name, review_overall)
+
+#1.6 million-ish rows 
+count(beer_users)
+
+#how wide will this matrix be?
+distinct_beers <- beer_users |> distinct(beer_name
+                                        )
+
+distinct_users <- beer_users |> distinct(review_profilename
+                                        )
+
+count(distinct_beers)
+
+count(distinct_users)
+```
+
+There are 56k items and 33k users, meaning the full matrix will be 56,857 columns wide and 33,388 rows long. It's possible there are some items that have only been reviewed a few times. These can be excluded if the data set is too wide for my machine.
+
+```{r}
+#how many beers have fewer than 5 reviews? 
+
+beer_counts <- beer_users |>
+    group_by(beer_name) |>
+    summarise(n_reviews = n()) |>
+    arrange((n_reviews))
+
+beer_less_than5 <- beer_counts |>
+  filter(n_reviews < 6)
+
+beer_less_than10 <- beer_counts |>
+  filter(n_reviews < 11)
+
+#about 38k beers have fewer than 5 reviews, 44k have fewer than 10
+count(beer_less_than5)
+count(beer_less_than10)
+
+
+```
+
+I was unable to make a grid that was 56k wide (14.1 GB), so I will eliminate drinks with fewer than 10 reviews. I was hoping I would be able to keep them when I ran the recommender in Azure, because items with only a few reviews should be recommended too.
+
+```{r}
+
+#anti-join
+beer_reduced <- anti_join(beer_users, beer_less_than10, by = "beer_name")
+
+
+```
+
+I also ran into memory issues when trying to convert this to a real ratings matrix, so I will limit the initial df to users with 20 or more reviews. (I initially tried this with a minimum of 5 reviews.)
+
+```{r}
+#this cuts from 32k users to about 7.5k
+user_counts <- beer_reduced |>
+  count(review_profilename) |>
+  filter(n >= 20)
+
+beer_reduced2 <- beer_reduced |>
+  semi_join(user_counts, by = "review_profilename")
+
+#how many rows are left?
+count(beer_reduced2)
+```
+
+Even after reducing the data set, there are still about 1.4 million ratings.
+
+```{r}
+#assigning a user ID
+beer_userids <- beer_reduced2 |>
+  mutate(user_id = as.integer(factor(review_profilename))) |>
+  select(user_id, beer_name, review_overall)
+
+count(beer_userids)
+```
+
+Create the wide df before converting to a real ratings matrix:
+
+```{r}
+beer_wide <- pivot_wider(
+  data = beer_userids,
+  id_cols = user_id,
+  names_from = beer_name,
+  values_from = review_overall,
+  #in case users reviewed a beer more than once (reviewers can)
+  values_fn = first 
+)
+
+```
+
+```{r}
+#there is one NA user (this is likely bad data, so I will remove it)
+sum(is.na(beer_wide$user_id))
+
+beer_wide <- beer_wide[!is.na(beer_wide$user_id), ]
+
+
+```
+
+```{r}
+
+#convert user ids to row names
+rownames(beer_wide) <- beer_wide$user_id
+
+
+#remove userid column
+beer_wide <- beer_wide |> select(-user_id)
+```
+
+## Exploratory analysis
+
+There's some exploratory analysis above, like the number of users and products. Here, I look at how sparse the matrix is using images.
+
+```{r}
+
+beer_matrix <- as.matrix(beer_wide)
+
+real_beer_matrix <- as(beer_matrix, "realRatingMatrix")
+#binarize
+binarized_matrix <- binarize(real_beer_matrix, minRating=.5)
+
+
+image(binarized_matrix[1:1000, 1:1000])
+
+#a sparser piece of the data set
+image(binarized_matrix[1000:1100, 1000:1100])
+
+```
+
+Here are histograms of the number of ratings by user and item (for the original data set):
+
+```{r}
+#by user
+rating_totals <- beer_users |>
+  count(review_profilename)
+
+rating_totals |> ggplot(aes(x = n)) +
+  geom_histogram(bins = 100) +
+  labs(title = "Number of Ratings by User", x = "number of ratings") +
+  theme_minimal()
+
+#by product
+review_totals <- beer_users |>
+  count(beer_name)
+
+review_totals |> ggplot(aes(x = n)) +
+  geom_histogram(bins = 200) +
+  labs(title = "Number of Ratings by Beer", x = "number of ratings") +
+  theme_minimal()
+
+#mean (by user) is 47.5 ratings
+mean(rating_totals$n, na.rm = TRUE)
+
+#min
+min(rating_totals$n, na.rm = TRUE)
+
+#max is 5871
+max(rating_totals$n, na.rm = TRUE)
+
+#item with most reviews has 3290
+max(review_totals$n, na.rm = TRUE)
+
+mean(review_totals$n, na.rm = TRUE)
+
+```
+
+As we learned above, a large number of users have only rated 1-5 items. There are some extreme outliers with thousands of reviews. Overall, there's a huge range of ratings. The ratings by item histogram looks similar, skewed right - a large number of items have only one review. Several items have a few thousand reviews.
+
+## Implementing ALS
+
+ALS breaks the binary matrix into two smaller matrices that account for users and items as well as latent factors.
+
+I tried to run this algorithm a few times on the actual data set. On the full data set, after removing items with fewer than 10 ratings, I reached half an hour and stopped it. I went back, limited the data set to users with 20 ratings or more, and tried again, but it kept running. Here, I limit to users with 40+ ratings. With the full (remaining) data set, this takes about 30 minutes to run on my machine. There are about 5100 users in this matrix.
+
+Since every user has at least 40 ratings. I will let the algorithm "see" up to 25. This is not a very cold start—I'd originally set it to 4 ratings because users had a minimum of 5. However, it's also below the average for the entire data set of about 48 ratings.
+
+```{r}
+
+counts <- rowCounts(binarized_matrix)
+keep <- counts > 40
+beer40 <- binarized_matrix[keep, ]
+
+```
+
+```{r}
+set.seed(1122)
+scheme <- evaluationScheme(beer40,
+                           method     = "split",
+                           #train/test split
+                           train      = 0.8,
+                           #model can see 15 ratings for each user
+                           given      = 25, 
+                           goodRating = 1)
+
+
+set.seed(1122)
+results <- evaluate(scheme, 
+                    method = "ALS_implicit",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+avg(results)
+
+```
+
+As n goes up, recall goes up and precision goes down. Precision is very high at almost .5 for k=5, meaning that with no changes, to the default settings, ALS is resulting in a large proportion of true positives by total recommendations, even as the number of recommendations increases.
+
+### Optimizing for precision\@k
+
+I ran the algorithm with a sample of 100 users, and the results were a little different, but the alternative is waiting half an hour for each item I want to test. I will optimize it using a sample size of 100. I will optimize lambda and n_factors (dimensionality).
+
+```{r}
+
+set.seed(1122)
+beer_sample_100 <- beer40[sample(nrow(beer40), 100), ]
+
+
+scheme2 <- evaluationScheme(beer_sample_100,
+                            method     = "split",
+                            #train/test split
+                            train      = 0.8,
+                            #model can see 15 ratings for each user
+                            given      = 25, 
+                            goodRating = 1)
+
+set.seed(1122)
+test_results <- evaluate(scheme2, 
+                    method = "ALS_implicit",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40))
+
+avg(test_results)
+```
+
+```{r}
+
+set.seed(1122)
+
+#Test n_factors
+factor_values <- c(5, 10, 20, 50, 100)
+
+factor_results <- lapply(factor_values, function(f) {
+  model <- evaluate(scheme2,
+                    method = "ALS_implicit",
+                    type = "topNList",
+                    n = c(5, 10, 20),
+                    parameter = list(n_factors = f))
+  
+  res <- avg(model)
+  data.frame(n_factors = f,
+             n = c(5, 10, 20),
+             precision = res[, "precision"],
+             recall    = res[, "recall"])
+})
+
+factor_df <- bind_rows(factor_results)
+
+ggplot(factor_df, aes(x = n_factors, y = precision, color = factor(n))) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Precision vs n_factors", x = "n_factors", y = "Precision", color = "Top-N") +
+  theme_minimal()
+
+# Test lambda 
+lambda_values <- c(0.001, 0.01, 0.1, 1, 10)
+
+lambda_results <- lapply(lambda_values, function(l) {
+  model <- evaluate(scheme2,
+                    method = "ALS_implicit",
+                    type = "topNList",
+                    n = c(5, 10, 20),
+                    parameter = list(n_factors = 10, lambda = l))
+  
+  res <- avg(model)
+  data.frame(lambda = l,
+             n = c(5, 10, 20),
+             precision = res[, "precision"],
+             recall    = res[, "recall"])
+})
+
+lambda_df <- bind_rows(lambda_results)
+
+ggplot(lambda_df, aes(x = lambda, y = precision, color = factor(n))) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  labs(title = "Precision vs lambda", x = "lambda (log scale)", y = "Precision", color = "Top-N") +
+  theme_minimal()
+
+lambda_df
+
+factor_df
+```
+
+Lambda is performing best around .01, on the low end of the values tested. A low lambda can lead to overfitting (it removes the penalty on bigger feature values); .001 and .01 give similar results, but for this reason I've decided to go wtih .01. A high lambda can lead to underfitting (it heavily penalizes big feature values).
+
+Precision is highest around n_factors = 5, which means lower dimensionality is best for this data set. Precision does increase as dimensionality goes up (after dropping sharply), so in theory there is a higher value where precision is better, but this could be due to overfitting. It's also less efficient to have a higher dimensionality.
+
+Implementing the optimized paramaters with a subset of the data set:
+
+```{r}
+set.seed(1122)
+results_2 <- evaluate(scheme2, 
+                      method = "ALS_implicit",
+                      type = "topNList", 
+                      n = c(5, 10, 20, 40), 
+                      parameter = list(n_factors = 5, 
+                                       lambda = .01))
+
+avg(results_2)
+```
+
+Precision maxes out at .49 at 5 recommendations for this optimized test set.
+
+## Running the recommender in Azure
+
+I wanted to run ALS in Azure to see if it was more efficient.
+
+Upload the CSV into the cloud:
+
+![](images/clipboard-2078128767.png){width="440"}
+
+Here is all the code I ran in powershell, in order:
+
+```{none}
+
+ssh [user name]
+
+R
+
+library(AzureStor)
+
+cont <- storage_container(
+  "[Blob storage URL]",
+  key = "[network key]"
+)
+
+
+storage_download(cont, "beer_reviews.csv", "beer.csv")
+beer_ratings <- read.csv("beer.csv")
+head(beer_ratings)
+
+
+storage_download(cont, "beer_reviews.csv", "beer.csv", overwrite = TRUE)
+beer_ratings <- read.csv("beer.csv")
+head(beer_ratings)
+
+
+library(recommenderlab)
+library(dplyr)
+library(tibble)
+library(tidyr)
+
+
+#transform
+beer_users <- beer_ratings |>
+  select(review_profilename, beer_name, review_overall)
+
+  
+#remove beers with fewer than 10 ratings
+beer_counts <- beer_users |>
+    group_by(beer_name) |>
+    summarise(n_reviews = n()) |>
+    arrange((n_reviews))
+
+beer_less_than10 <- beer_counts |>
+  filter(n_reviews < 11)
+
+beer_reduced <- anti_join(beer_users, beer_less_than10, by = "beer_name")
+
+
+#removing users with fewer than 20 reviews
+user_counts <- beer_reduced |>
+  count(review_profilename) |>
+  filter(n >= 20)
+
+beer_reduced2 <- beer_reduced |>
+  semi_join(user_counts, by = "review_profilename")
+
+#assigning a user ID
+beer_userids <- beer_reduced2 |>
+  mutate(user_id = as.integer(factor(review_profilename))) |>
+  select(user_id, beer_name, review_overall)
+
+#create wide format
+beer_wide <- pivot_wider(
+  data = beer_userids,
+  id_cols = user_id,
+  names_from = beer_name,
+  values_from = review_overall,
+  #in case users reviewed a beer more than once (reviewers can)
+  values_fn = first 
+)
+
+
+#remove one NA user 
+sum(is.na(beer_wide$user_id))
+
+beer_wide <- beer_wide[!is.na(beer_wide$user_id), ]
+
+#create the binary matrix
+beer_matrix <- as.matrix(beer_wide)
+
+real_beer_matrix <- as(beer_matrix, "realRatingMatrix")
+#binarize
+binarized_matrix <- binarize(real_beer_matrix, minRating=.5)
+
+#create scheme
+
+set.seed(1122)
+scheme <- evaluationScheme(binarized_matrix,
+                           method     = "split",
+                           #train/test split
+                           train      = 0.8,
+                           #model can see 15 ratings for each user
+                           given      = 15, 
+                           goodRating = 1)
+
+#what does ALS accept as paramaters? 
+#recommenderRegistry$get_entry("ALS", dataType = "binaryRatingMatrix")
+
+#test recommender (using our optimized parameter)
+set.seed(1122)
+results <- evaluate(scheme, 
+                    method = "ALS_implicit",
+                    type = "topNList", 
+                    n = c(5, 10, 20, 40),
+                    parameter = list(n_factors = 5, 
+                                       lambda = .01)
+                    )
+#print results
+avg(results)
+
+```
+
+Uploading the data set:
+
+![](images/clipboard-1801207380.png)
+
+![](images/clipboard-424918632.png)
+
+I got the same error when trying to create the wide data frame with the entire data set as I got on my own machine:
+
+![](images/clipboard-160749598.png)
+
+So I decided to limit the number of items in the data set again.
+
+Then I got this error:
+
+![](images/clipboard-3248983473.png)
+
+So I limited the data set to only users with 20 or more reviews. I let the scheme see 15 reviews (this is a larger data set than the one I ran on my machine, with minimum 20 reviews per user instead of 40).
+
+Ran the recommender and waited:
+
+![](images/clipboard-1016591051.png)
+
+it ran; it took about 30 minutes on the full data set:
+
+![](images/clipboard-1830725648.png)
+
+The results on the full data set:
+
+![](images/clipboard-3097132195.png)
+
+This took 30 minutes, about as long as the slightly smaller data set on my machine (limited to users with 40 reviews or more). Notably, the precision is slightly lower and the recall is somehwat higher than the model built in RStudio. This may be because I used a version of the data set that still included users with fewer than 40 reviews, making the model less likely to find a high proportion of true positive cases compared to false positives. I'd also adjusted the model so it could see 15 reviews, not 25, to account for users with fewer reviews, so a lower "given" may have factored in.
+
+![](images/clipboard-1423319700.png)
+
+## UX elements
+
+Alcohol products recommendations are interesting because different states have different rules. For example, some states restrict or prohibit the shipping and delivery of alcohol. Other states don't allow you to search inventory of nearby stores online. That makes it more challenging to engineer features for all users. Some of these features may not work of all users in the US, to say nothing about international users.
+
+- **Local recommendations** - gives users the chance to see what's near them; can also highlight local products that aren't as popular or don't have as many ratings. Where possible, let users know wheat recommendations are in stock nearby.
+
+- **Seeing what friends tried and rated** - users appreciate recommendations based on what their friends tried (though they tend to be less accurate). Friend recommendations are also likely to be available locally.
+
+- **Explaining recommendations** ("because you liked x, you might like y...") to help contextualize why items are being suggested
+
+- **Wishlists** - These don't seem to be a feature currently. Since these products aren't something you can buy or watch immediately, it makes sense to let users add recommendations to wishlists or "to try" lists, rather than seeing the same recommendation over and over.
+
+### Conclusion
+
+This is a very wide data set at 56k items. Even using the cloud and dedicated RAM, I was unable to create a rcommender from the entire data set. However, with Azure, I could use a larger portion of the data set and run the recommender in about the same time I ran a more limited data set on my local machine.
+
+Going by precision, for this data set, ALS is able to find a large proportion or true positives (compared to false positives) quickly, though this proportion goes down with more recommendations. This was true whether I used a sample of the data set or the larger data set. As k increased, recall also increased, which meant that with more recommendations, the model was getting better at finding all the positive cases.
+
+High precision with such a wide data set rasied the question of whether ALS was working well because the first few recommendations were popular and/or becuase implicit ratings were concentrated among a smaller set of items. The optimal dimensionality was only 5, which meant there were fewer latent factors, and this may support the theory that popularity factored heavily into recommendations.
+
+The concentration of ratings on a small number of products is a good argument for including other elements in a recommender that improve discoverability, such as letting users know what's available locally and including recommendations based on what friends tried.
+
+### Sources
+
+Claude Sonnet, 4.6. [Large language model] Accessed July 2026. Claude.ai
