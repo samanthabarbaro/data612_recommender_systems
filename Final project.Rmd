@@ -11,7 +11,9 @@ I'm using this Beer Advocate data set from Kaggle, with 1.5 million ratings, [lo
 
 ### Methodology and outline
 
-Below, I take the Beer Advocate data set, implement ALS, and optimize it for precision\@k while also monitoring recall\@k. I look at precision, the total number of true positives out of all predicted positives, and recall, the proportion of relevant items correctly predicted, with a very sparse data set. My goal is to predict whether someone would be interested in purchasing a beer, not whether they will rate it highly, hence the ALS implementation. ALS is also great at handling data sets with lots of missing information, and this is a very sparse data set.
+Below, I take the Beer Advocate data set, implement ALS, and optimize it for precision\@k while also monitoring recall\@k. I look at precision, the total number of true positives out of all predicted positives, and recall, the proportion of relevant items correctly predicted, with a very sparse data set. RMSE is not available for ALS (because the ratings are all 0 or 1), and NDCG doesn't make a ton of sense because relevant items aren't ranked (they are all 1 or 0), though the order in which the algorithm finds relevant cases is important. I chose precision because, with a sparse data set, a good recommender will find a lot of existing positive cases. As for precision vs. recall, precision ensures the algorithm's positives are trustworthy as compared to the number of false positives. Precision is typically used when there is a high cost to false alarms, and while that is a little dramatic for drink recommendations, users who see bad recommendations at the top may find them untrustworthy and may not pay attention to future recommendations. Recall depends on the model captuing all the true positives, which seems especially difficult with a data set that is 56k columns wide, and with a good number of users who may have many more ratings than there are suggestions. Recall is also typically used as a primary metric in data sets where finding all the positive cases is important, which is not the case with this data set.
+
+My goal is to predict whether someone would be interested in purchasing a beer, not whether they will rate it highly, hence the ALS implementation. ALS is also great at handling data sets with lots of missing information, and this is a very sparse data set.
 
 I also deploy the same code in Azure. I had trouble processing ALS on a data set this large on my machine, so I wanted to see if using Azure's dedicated RAM sped up the process and created efficiencies.
 
@@ -528,6 +530,8 @@ High precision with such a wide data set rasied the question of whether ALS was 
 
 The concentration of ratings on a small number of products is a good argument for including other elements in a recommender that improve discoverability, such as letting users know what's available locally and including recommendations based on what friends tried.
 
-### Sources
+**A note on using precision:** Precision doesn't count false negatives (it doesn't penalize the algorithm for not picking things the user has tried, only for picking things the user hasn't tried). It also may be misleading in a data set like this one, with implicit ratings, where many users have tried the popular items. If the algorithm chooses a lot of popular items for everyone, precision will be high, but, as discussed above, the recommender might not provide a ton of value. Recall, the ability to find all of the true positives, also has drawbacks in a tremendously wide data set like this where finding all positive cases is especially difficult; it may also be inflated due to popular items in this data set. However, the fact that recall increases as k increases means the algorithm has continued to pick relevant cases.
+
+### Sources 
 
 Claude Sonnet, 4.6. [Large language model] Accessed July 2026. Claude.ai
